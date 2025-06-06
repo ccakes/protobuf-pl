@@ -1,0 +1,841 @@
+package Proto::PL::Generator;
+
+use strict;
+use warnings;
+use Carp qw(croak);
+use File::Path qw(make_path);
+use File::Spec;
+use Proto::PL::AST;
+
+sub new {
+    my ($class, %args) = @_;
+    return bless {
+        output_dir => $args{output_dir} || 'lib',
+        files => {},  # file AST objects by filename
+    }, $class;
+}
+
+sub add_file {
+    my ($self, $file) = @_;
+    $self->{files}{$file->filename} = $file;
+}
+
+sub generate_all {
+    my ($self) = @_;
+    
+    for my $filename (keys %{$self->{files}}) {
+        my $file = $self->{files}{$filename};
+        $self->generate_file($file);
+    }
+}
+
+sub generate_file {
+    my ($self, $file) = @_;
+    
+    # Determine output file path
+    my $package = $file->package || '';
+    my @package_parts = split /\./, $package;
+    map { s/^(.)/uc($1)/e } @package_parts;  # Capitalize each part
+    
+    my $output_path = File::Spec->catfile(
+        $self->{output_dir},
+        @package_parts
+    );
+    
+    make_path($output_path) if @package_parts;
+    
+    # Generate code for each top-level message and enum
+    for my $message (@{$file->messages}) {
+        $self->_generate_message_file($message, $file, $output_path);
+    }
+    
+    for my $enum (@{$file->enums}) {
+        $self->_generate_enum_file($enum, $file, $output_path);
+    }
+}
+
+sub _generate_message_file {
+    my ($self, $message, $file, $output_path) = @_;
+    
+    my $package_prefix = $self->_get_package_prefix($file);
+    my $filename = File::Spec->catfile($output_path, $message->name . '.pm');
+    
+    my $code = $self->_generate_message_code($message, $package_prefix, $file);
+    
+    # Write to file
+    open my $fh, '>', $filename or croak "Cannot write $filename: $!";
+    print $fh $code;
+    close $fh;
+}
+
+sub _generate_enum_file {
+    my ($self, $enum, $file, $output_path) = @_;
+    
+    my $package_prefix = $self->_get_package_prefix($file);
+    my $filename = File::Spec->catfile($output_path, $enum->name . '.pm');
+    
+    my $code = $self->_generate_enum_code($enum, $package_prefix);
+    
+    # Write to file
+    open my $fh, '>', $filename or croak "Cannot write $filename: $!";
+    print $fh $code;
+    close $fh;
+}
+
+sub _get_package_prefix {
+    my ($self, $file) = @_;
+    return '' unless $file->package;
+    
+    my $package = $file->package;
+    $package =~ s/\./::/g;
+    $package =~ s/^(.)/uc($1)/e;  # Capitalize first letter
+    $package =~ s/::(.)/::uc($1)/ge;  # Capitalize after ::
+    
+    return $package;
+}
+
+sub _generate_message_code {
+    my ($self, $message, $package_prefix, $file) = @_;
+    
+    my $package_name = $message->perl_package_name($package_prefix);
+    
+    my $code = <<EOF;
+package ${package_name};
+
+use strict;
+use warnings;
+use Proto::PL::Runtime;
+use Carp qw(croak);
+
+our \@ISA = qw(Proto::PL::Runtime::Message);
+
+EOF
+
+    # Generate field constants
+    my %field_numbers = map { $_->name => $_->number } @{$message->fields};
+    for my $field (@{$message->fields}) {
+        $code .= sprintf("use constant FIELD_%s => %d;\n", 
+                        uc($field->name), $field->number);
+    }
+    $code .= "\n";
+    
+    # Generate constructor
+    $code .= $self->_generate_constructor($message);
+    
+    # Generate field accessors
+    for my $field (@{$message->fields}) {
+        $code .= $self->_generate_field_accessor($field);
+    }
+    
+    # Generate encoding method
+    $code .= $self->_generate_encode_method($message);
+    
+    # Generate decoding method
+    $code .= $self->_generate_decode_method($message);
+    
+    # Generate hash conversion methods
+    $code .= $self->_generate_hash_methods($message);
+    
+    # Generate nested messages and enums in the same file
+    for my $nested (@{$message->nested_messages}) {
+        $code .= "\n" . $self->_generate_nested_message_code($nested, $package_name);
+    }
+    
+    for my $nested (@{$message->nested_enums}) {
+        $code .= "\n" . $self->_generate_nested_enum_code($nested, $package_name);
+    }
+    
+    $code .= "\n1;\n\n";
+    $code .= $self->_generate_pod_documentation($message, $package_name);
+    
+    return $code;
+}
+
+sub _generate_constructor {
+    my ($self, $message) = @_;
+    
+    my $code = <<'EOF';
+sub new {
+    my ($class, %args) = @_;
+    my $self = $class->SUPER::new(%args);
+    
+    # Initialize field values
+EOF
+
+    for my $field (@{$message->fields}) {
+        if ($field->is_map) {
+            $code .= sprintf("    \$self->{%s} = {} unless exists \$self->{%s};\n",
+                           $field->name, $field->name);
+        } elsif ($field->is_repeated) {
+            $code .= sprintf("    \$self->{%s} = [] unless exists \$self->{%s};\n",
+                           $field->name, $field->name);
+        }
+    }
+    
+    $code .= <<'EOF';
+    
+    return $self;
+}
+
+EOF
+    
+    return $code;
+}
+
+sub _generate_field_accessor {
+    my ($self, $field) = @_;
+    
+    my $name = $field->name;
+    my $code = <<EOF;
+sub ${name} {
+    my (\$self, \$value) = \@_;
+    
+    if (\@_ > 1) {
+        \$self->{${name}} = \$value;
+        \$self->{_present}{${name}} = 1;
+        return \$self;
+    }
+    
+    return \$self->{${name}};
+}
+
+EOF
+
+    return $code;
+}
+
+sub _generate_encode_method {
+    my ($self, $message) = @_;
+    
+    my $code = <<'EOF';
+sub _encode_fields {
+    my ($self) = @_;
+    my $buffer = '';
+    
+EOF
+
+    for my $field (@{$message->fields}) {
+        $code .= $self->_generate_field_encoding($field);
+    }
+    
+    $code .= <<'EOF';
+    
+    return $buffer;
+}
+
+EOF
+
+    return $code;
+}
+
+sub _generate_field_encoding {
+    my ($self, $field) = @_;
+    
+    my $name = $field->name;
+    my $number = $field->number;
+    my $code = "";
+    
+    if ($field->is_repeated) {
+        if ($field->is_packed) {
+            # Packed repeated field
+            $code .= <<EOF;
+    # Encode packed repeated field: ${name}
+    if (\$self->{${name}} && \@{\$self->{${name}}}) {
+        my \$packed_data = '';
+        for my \$value (\@{\$self->{${name}}}) {
+            \$packed_data .= ${\ $self->_get_encode_expression($field, '$value') };
+        }
+        \$buffer .= Proto::PL::Runtime::_encode_tag(${number}, 2);  # length-delimited
+        \$buffer .= Proto::PL::Runtime::_encode_varint(length(\$packed_data));
+        \$buffer .= \$packed_data;
+    }
+    
+EOF
+        } else {
+            # Regular repeated field
+            $code .= <<EOF;
+    # Encode repeated field: ${name}
+    if (\$self->{${name}}) {
+        for my \$value (\@{\$self->{${name}}}) {
+            next unless defined \$value;
+            \$buffer .= Proto::PL::Runtime::_encode_tag(${number}, ${\$field->wire_type});
+            \$buffer .= ${\ $self->_get_encode_expression($field, '$value') };
+        }
+    }
+    
+EOF
+        }
+    } elsif ($field->is_map) {
+        # Map field
+        $code .= <<EOF;
+    # Encode map field: ${name}
+    if (\$self->{${name}}) {
+        for my \$key (keys \%{\$self->{${name}}}) {
+            my \$value = \$self->{${name}}{\$key};
+            my \$entry_data = '';
+            
+            # Key (field 1)
+            \$entry_data .= Proto::PL::Runtime::_encode_tag(1, ${\$field->type->key_type->wire_type});
+            \$entry_data .= ${\ $self->_get_encode_expression_for_type($field->type->key_type, '$key') };
+            
+            # Value (field 2)
+            if (defined \$value) {
+                \$entry_data .= Proto::PL::Runtime::_encode_tag(2, ${\$field->type->value_type->wire_type});
+                \$entry_data .= ${\ $self->_get_encode_expression_for_type($field->type->value_type, '$value') };
+            }
+            
+            \$buffer .= Proto::PL::Runtime::_encode_tag(${number}, 2);  # length-delimited
+            \$buffer .= Proto::PL::Runtime::_encode_varint(length(\$entry_data));
+            \$buffer .= \$entry_data;
+        }
+    }
+    
+EOF
+    } else {
+        # Singular field
+        my $presence_check = $field->is_optional ? 
+            "exists \$self->{_present}{${name}} && " : "";
+        
+        $code .= <<EOF;
+    # Encode field: ${name}
+    if (${presence_check}defined \$self->{${name}}) {
+        \$buffer .= Proto::PL::Runtime::_encode_tag(${number}, ${\$field->wire_type});
+        \$buffer .= ${\ $self->_get_encode_expression($field, "\$self->{${name}}") };
+    }
+    
+EOF
+    }
+    
+    return $code;
+}
+
+sub _get_encode_expression {
+    my ($self, $field, $var) = @_;
+    return $self->_get_encode_expression_for_type($field->type, $var);
+}
+
+sub _get_encode_expression_for_type {
+    my ($self, $type, $var) = @_;
+    
+    if ($type->isa('Proto::PL::AST::ScalarType')) {
+        my $type_name = $type->name;
+        
+        if ($type_name eq 'string') {
+            return "Proto::PL::Runtime::_encode_string(${var})";
+        } elsif ($type_name eq 'bytes') {
+            return "Proto::PL::Runtime::_encode_bytes(${var})";
+        } elsif ($type_name eq 'bool') {
+            return "Proto::PL::Runtime::_encode_varint(${var} ? 1 : 0)";
+        } elsif ($type_name =~ /^sint/) {
+            my $zigzag_func = $type_name eq 'sint32' ? '_encode_zigzag32' : '_encode_zigzag64';
+            return "Proto::PL::Runtime::_encode_varint(Proto::PL::Runtime::${zigzag_func}(${var}))";
+        } elsif ($type_name =~ /^(int|uint)/) {
+            return "Proto::PL::Runtime::_encode_varint(${var})";
+        } elsif ($type_name eq 'fixed32') {
+            return "Proto::PL::Runtime::_encode_fixed32(${var})";
+        } elsif ($type_name eq 'fixed64') {
+            return "Proto::PL::Runtime::_encode_fixed64(${var})";
+        } elsif ($type_name eq 'sfixed32') {
+            return "Proto::PL::Runtime::_encode_sfixed32(${var})";
+        } elsif ($type_name eq 'sfixed64') {
+            return "Proto::PL::Runtime::_encode_sfixed64(${var})";
+        } elsif ($type_name eq 'float') {
+            return "Proto::PL::Runtime::_encode_float(${var})";
+        } elsif ($type_name eq 'double') {
+            return "Proto::PL::Runtime::_encode_double(${var})";
+        }
+    } elsif ($type->isa('Proto::PL::AST::EnumType')) {
+        return "Proto::PL::Runtime::_encode_varint(${var})";
+    } elsif ($type->isa('Proto::PL::AST::MessageType')) {
+        return "${var}->encode()";
+    }
+    
+    croak "Unknown type for encoding: " . ref($type);
+}
+
+sub _generate_decode_method {
+    my ($self, $message) = @_;
+    
+    my $code = <<'EOF';
+sub _decode_field {
+    my ($self, $field_num, $wire_type, $value) = @_;
+    
+EOF
+
+    for my $field (@{$message->fields}) {
+        $code .= $self->_generate_field_decoding($field);
+    }
+    
+    $code .= <<'EOF';
+    
+    return 0;  # Unknown field
+}
+
+EOF
+
+    return $code;
+}
+
+sub _generate_field_decoding {
+    my ($self, $field) = @_;
+    
+    my $name = $field->name;
+    my $number = $field->number;
+    my $expected_wire_type = $field->wire_type;
+    
+    my $code = <<EOF;
+    if (\$field_num == ${number}) {
+EOF
+
+    if ($field->is_repeated) {
+        if ($field->is_packed) {
+            # Packed repeated field
+            $code .= <<EOF;
+        if (\$wire_type == 2) {  # length-delimited (packed)
+            my \$pos = 0;
+            my \$len = length(\$value);
+            while (\$pos < \$len) {
+                my (\$decoded_value, \$consumed) = ${\ $self->_get_decode_expression($field, '$value', '$pos') };
+                push \@{\$self->{${name}}}, \$decoded_value;
+                \$pos += \$consumed;
+            }
+            return 1;
+        } elsif (\$wire_type == ${expected_wire_type}) {  # individual value
+            my (\$decoded_value, \$consumed) = ${\ $self->_get_decode_expression($field, '$value', '0') };
+            push \@{\$self->{${name}}}, \$decoded_value;
+            return 1;
+        }
+EOF
+        } else {
+            # Regular repeated field
+            $code .= <<EOF;
+        if (\$wire_type == ${expected_wire_type}) {
+            my (\$decoded_value, \$consumed) = ${\ $self->_get_decode_expression($field, '$value', '0') };
+            push \@{\$self->{${name}}}, \$decoded_value;
+            return 1;
+        }
+EOF
+        }
+    } elsif ($field->is_map) {
+        # Map field
+        $code .= <<EOF;
+        if (\$wire_type == 2) {  # length-delimited (map entry)
+            my \$pos = 0;
+            my \$len = length(\$value);
+            my (\$key, \$map_value);
+            
+            while (\$pos < \$len) {
+                my (\$tag, \$tag_consumed) = Proto::PL::Runtime::_decode_varint(\$value, \$pos);
+                \$pos += \$tag_consumed;
+                
+                my \$entry_field_num = \$tag >> 3;
+                my \$entry_wire_type = \$tag & 0x07;
+                
+                if (\$entry_field_num == 1) {  # Key
+                    (\$key, my \$key_consumed) = ${\ $self->_get_decode_expression_for_type($field->type->key_type, '$value', '$pos') };
+                    \$pos += \$key_consumed;
+                } elsif (\$entry_field_num == 2) {  # Value
+                    (\$map_value, my \$value_consumed) = ${\ $self->_get_decode_expression_for_type($field->type->value_type, '$value', '$pos') };
+                    \$pos += \$value_consumed;
+                } else {
+                    # Skip unknown field in map entry
+                    if (\$entry_wire_type == 0) {
+                        my (\$skip_value, \$skip_consumed) = Proto::PL::Runtime::_decode_varint(\$value, \$pos);
+                        \$pos += \$skip_consumed;
+                    } elsif (\$entry_wire_type == 1) {
+                        \$pos += 8;
+                    } elsif (\$entry_wire_type == 2) {
+                        my (\$skip_len, \$len_consumed) = Proto::PL::Runtime::_decode_varint(\$value, \$pos);
+                        \$pos += \$len_consumed + \$skip_len;
+                    } elsif (\$entry_wire_type == 5) {
+                        \$pos += 4;
+                    }
+                }
+            }
+            
+            \$self->{${name}}{\$key} = \$map_value if defined \$key;
+            return 1;
+        }
+EOF
+    } else {
+        # Singular field
+        $code .= <<EOF;
+        if (\$wire_type == ${expected_wire_type}) {
+            my (\$decoded_value, \$consumed) = ${\ $self->_get_decode_expression($field, '$value', '0') };
+            \$self->{${name}} = \$decoded_value;
+            \$self->{_present}{${name}} = 1;
+            return 1;
+        }
+EOF
+    }
+    
+    $code .= "    }\n    \n";
+    
+    return $code;
+}
+
+sub _get_decode_expression {
+    my ($self, $field, $value_var, $pos_var) = @_;
+    return $self->_get_decode_expression_for_type($field->type, $value_var, $pos_var);
+}
+
+sub _get_decode_expression_for_type {
+    my ($self, $type, $value_var, $pos_var) = @_;
+    
+    if ($type->isa('Proto::PL::AST::ScalarType')) {
+        my $type_name = $type->name;
+        
+        if ($type_name eq 'string') {
+            if ($pos_var eq '0') {
+                # Regular field: value is already extracted content
+                return "Proto::PL::Runtime::_decode_string(${value_var}), length(${value_var})";
+            } else {
+                # Map field: need to decode length-delimited
+                return "do { my (\$len, \$len_consumed) = Proto::PL::Runtime::_decode_varint(${value_var}, ${pos_var}); my \$bytes = substr(${value_var}, ${pos_var} + \$len_consumed, \$len); (Proto::PL::Runtime::_decode_string(\$bytes), \$len_consumed + \$len) }";
+            }
+        } elsif ($type_name eq 'bytes') {
+            if ($pos_var eq '0') {
+                # Regular field: value is already extracted content
+                return "${value_var}, length(${value_var})";
+            } else {
+                # Map field: need to decode length-delimited  
+                return "do { my (\$len, \$len_consumed) = Proto::PL::Runtime::_decode_varint(${value_var}, ${pos_var}); my \$bytes = substr(${value_var}, ${pos_var} + \$len_consumed, \$len); (\$bytes, \$len_consumed + \$len) }";
+            }
+        } elsif ($type_name eq 'bool') {
+            if ($pos_var eq '0') {
+                # Regular field: value is already decoded
+                return "${value_var}, 0";
+            } else {
+                # Map field: need to decode varint
+                return "Proto::PL::Runtime::_decode_varint(${value_var}, ${pos_var})";
+            }
+        } elsif ($type_name =~ /^sint/) {
+            my $zigzag_func = $type_name eq 'sint32' ? '_decode_zigzag32' : '_decode_zigzag64';
+            if ($pos_var eq '0') {
+                # Regular field: value is already decoded, just apply zigzag
+                return "Proto::PL::Runtime::${zigzag_func}(${value_var}), 0";
+            } else {
+                # Map field: need to decode varint then apply zigzag
+                return "do { my (\$v, \$c) = Proto::PL::Runtime::_decode_varint(${value_var}, ${pos_var}); (Proto::PL::Runtime::${zigzag_func}(\$v), \$c) }";
+            }
+        } elsif ($type_name =~ /^(int|uint)/) {
+            if ($pos_var eq '0') {
+                # Regular field: value is already decoded
+                return "${value_var}, 0";
+            } else {
+                # Map field: need to decode varint
+                return "Proto::PL::Runtime::_decode_varint(${value_var}, ${pos_var})";
+            }
+        } elsif ($type_name eq 'fixed32') {
+            return "Proto::PL::Runtime::_decode_fixed32(${value_var}), 4";
+        } elsif ($type_name eq 'fixed64') {
+            return "Proto::PL::Runtime::_decode_fixed64(${value_var}), 8";
+        } elsif ($type_name eq 'sfixed32') {
+            return "Proto::PL::Runtime::_decode_sfixed32(${value_var}), 4";
+        } elsif ($type_name eq 'sfixed64') {
+            return "Proto::PL::Runtime::_decode_sfixed64(${value_var}), 8";
+        } elsif ($type_name eq 'float') {
+            return "Proto::PL::Runtime::_decode_float(${value_var}), 4";
+        } elsif ($type_name eq 'double') {
+            return "Proto::PL::Runtime::_decode_double(${value_var}), 8";
+        }
+    } elsif ($type->isa('Proto::PL::AST::EnumType')) {
+        return "Proto::PL::Runtime::_decode_varint(${value_var}, ${pos_var})";
+    } elsif ($type->isa('Proto::PL::AST::MessageType')) {
+        my $type_name = $type->name;
+        return "${type_name}->decode(${value_var}), length(${value_var})";
+    }
+    
+    croak "Unknown type for decoding: " . ref($type);
+}
+
+sub _generate_hash_methods {
+    my ($self, $message) = @_;
+    
+    my $code = <<'EOF';
+sub _fields_to_hash {
+    my ($self, $hash) = @_;
+    
+EOF
+
+    for my $field (@{$message->fields}) {
+        my $name = $field->name;
+        
+        if ($field->is_map) {
+            $code .= <<EOF;
+    \$hash->{${name}} = \$self->{${name}} if \$self->{${name}} && \%{\$self->{${name}}};
+EOF
+        } elsif ($field->is_repeated) {
+            $code .= <<EOF;
+    \$hash->{${name}} = \$self->{${name}} if \$self->{${name}} && \@{\$self->{${name}}};
+EOF
+        } else {
+            my $presence_check = $field->is_optional ? 
+                "exists \$self->{_present}{${name}} && " : "";
+                
+            $code .= <<EOF;
+    \$hash->{${name}} = \$self->{${name}} if ${presence_check}defined \$self->{${name}};
+EOF
+        }
+    }
+    
+    $code .= <<'EOF';
+}
+
+EOF
+
+    return $code;
+}
+
+sub _generate_nested_message_code {
+    my ($self, $message, $parent_package) = @_;
+    
+    my $package_name = "${parent_package}::" . $message->name;
+    
+    my $code = <<EOF;
+package ${package_name};
+our \@ISA = qw(Proto::PL::Runtime::Message);
+
+EOF
+
+    # Generate the same structure as top-level messages
+    $code .= $self->_generate_constructor($message);
+    
+    for my $field (@{$message->fields}) {
+        $code .= $self->_generate_field_accessor($field);
+    }
+    
+    $code .= $self->_generate_encode_method($message);
+    $code .= $self->_generate_decode_method($message);
+    $code .= $self->_generate_hash_methods($message);
+    
+    # Recursively generate nested types
+    for my $nested (@{$message->nested_messages}) {
+        $code .= $self->_generate_nested_message_code($nested, $package_name);
+    }
+    
+    for my $nested (@{$message->nested_enums}) {
+        $code .= $self->_generate_nested_enum_code($nested, $package_name);
+    }
+    
+    return $code;
+}
+
+sub _generate_enum_code {
+    my ($self, $enum, $package_prefix) = @_;
+    
+    my $package_name = $enum->perl_package_name($package_prefix);
+    
+    my $code = <<EOF;
+package ${package_name};
+
+use strict;
+use warnings;
+
+# Enum values
+use constant {
+EOF
+
+    for my $value (@{$enum->values}) {
+        $code .= sprintf("    %s => %d,\n", $value->name, $value->number);
+    }
+    
+    $code .= <<'EOF';
+};
+
+# Export all constants
+our @EXPORT = qw(
+EOF
+
+    for my $value (@{$enum->values}) {
+        $code .= "    " . $value->name . "\n";
+    }
+    
+    $code .= <<'EOF';
+);
+
+sub import {
+    my $caller = caller;
+    no strict 'refs';
+    for my $const (@EXPORT) {
+        *{"${caller}::${const}"} = \&{$const};
+    }
+}
+
+1;
+
+EOF
+
+    $code .= $self->_generate_enum_pod_documentation($enum, $package_name);
+    
+    return $code;
+}
+
+sub _generate_nested_enum_code {
+    my ($self, $enum, $parent_package) = @_;
+    
+    my $package_name = "${parent_package}::" . $enum->name;
+    
+    my $code = <<EOF;
+package ${package_name};
+
+use constant {
+EOF
+
+    for my $value (@{$enum->values}) {
+        $code .= sprintf("    %s => %d,\n", $value->name, $value->number);
+    }
+    
+    $code .= "};\n\n";
+    
+    return $code;
+}
+
+sub _generate_pod_documentation {
+    my ($self, $message, $package_name) = @_;
+    
+    my $code = <<EOF;
+__END__
+
+=head1 NAME
+
+${package_name} - Protocol Buffers message class
+
+=head1 SYNOPSIS
+
+    use ${package_name};
+    
+    my \$msg = ${package_name}->new();
+    
+    # Set fields
+EOF
+
+    for my $field (@{$message->fields}) {
+        $code .= "    \$msg->" . $field->name . "('" . $field->name . " value');\n";
+    }
+    
+    $code .= <<'EOF';
+    
+    # Encode to bytes
+    my $bytes = $msg->encode();
+    
+    # Decode from bytes
+    my $decoded = ${package_name}->decode($bytes);
+
+=head1 DESCRIPTION
+
+This class represents a Protocol Buffers message.
+
+=head1 FIELDS
+
+EOF
+
+    for my $field (@{$message->fields}) {
+        my $type_desc = ref($field->type) =~ /::(\w+)Type$/ ? $1 : 'unknown';
+        my $label = $field->label || 'singular';
+        $code .= sprintf("=head2 %s (%s %s)\n\n", 
+                         $field->name, $label, lc($type_desc));
+    }
+    
+    $code .= <<'EOF';
+
+=head1 METHODS
+
+=head2 new(%args)
+
+Constructor. Field names can be provided as arguments.
+
+=head2 encode()
+
+Encodes the message to Protocol Buffers wire format.
+
+=head2 decode($bytes)
+
+Class method that decodes bytes in Protocol Buffers wire format.
+
+=head2 to_hash()
+
+Returns a hash representation of the message.
+
+=head2 from_hash($hashref)
+
+Class method that creates a message from a hash.
+
+=head1 AUTHOR
+
+Generated by pl_protoc
+
+=cut
+EOF
+
+    return $code;
+}
+
+sub _generate_enum_pod_documentation {
+    my ($self, $enum, $package_name) = @_;
+    
+    my $code = <<EOF;
+__END__
+
+=head1 NAME
+
+${package_name} - Protocol Buffers enum
+
+=head1 SYNOPSIS
+
+    use ${package_name};
+    
+    my \$value = RED;  # Imported constant
+
+=head1 DESCRIPTION
+
+This module defines constants for a Protocol Buffers enum.
+
+=head1 VALUES
+
+EOF
+
+    for my $value (@{$enum->values}) {
+        $code .= sprintf("=head2 %s = %d\n\n", $value->name, $value->number);
+    }
+    
+    $code .= <<'EOF';
+
+=head1 AUTHOR
+
+Generated by pl_protoc
+
+=cut
+EOF
+
+    return $code;
+}
+
+1;
+
+__END__
+
+=head1 NAME
+
+Proto::PL::Generator - Code generator for Protocol Buffers
+
+=head1 SYNOPSIS
+
+    use Proto::PL::Generator;
+    
+    my $generator = Proto::PL::Generator->new(
+        output_dir => 'lib',
+    );
+    
+    $generator->add_file($parsed_file);
+    $generator->generate_all();
+
+=head1 DESCRIPTION
+
+This module generates Perl code from Protocol Buffers AST.
+
+=head1 AUTHOR
+
+Generated by pl_protoc
+
+=cut
