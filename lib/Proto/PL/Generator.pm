@@ -531,13 +531,13 @@ EOF
             my \$pos = 0;
             my \$len = length(\$value);
             while (\$pos < \$len) {
-                my (\$decoded_value, \$consumed) = ${\ $self->_get_decode_expression($resolved_field, '$value', '$pos') };
+                my (\$decoded_value, \$consumed) = ${\ $self->_get_decode_expression($file, $resolved_field, '$value', '$pos') };
                 push \@{\$self->{${name}}}, \$decoded_value;
                 \$pos += \$consumed;
             }
             return 1;
         } elsif (\$wire_type == ${expected_wire_type}) {  # individual value
-            my (\$decoded_value, \$consumed) = ${\ $self->_get_decode_expression($resolved_field, '$value', '0') };
+            my (\$decoded_value, \$consumed) = ${\ $self->_get_decode_expression($file, $resolved_field, '$value', '0') };
             push \@{\$self->{${name}}}, \$decoded_value;
             return 1;
         }
@@ -546,7 +546,7 @@ EOF
             # Regular repeated field
             $code .= <<EOF;
         if (\$wire_type == ${expected_wire_type}) {
-            my (\$decoded_value, \$consumed) = ${\ $self->_get_decode_expression($resolved_field, '$value', '0') };
+            my (\$decoded_value, \$consumed) = ${\ $self->_get_decode_expression($file, $resolved_field, '$value', '0') };
             push \@{\$self->{${name}}}, \$decoded_value;
             return 1;
         }
@@ -568,10 +568,10 @@ EOF
                 my \$entry_wire_type = \$tag & 0x07;
                 
                 if (\$entry_field_num == 1) {  # Key
-                    (\$key, my \$key_consumed) = ${\ $self->_get_decode_expression_for_type($resolved_field->type->key_type, '$value', '$pos') };
+                    (\$key, my \$key_consumed) = ${\ $self->_get_decode_expression_for_type($file, $resolved_field->type->key_type, '$value', '$pos') };
                     \$pos += \$key_consumed;
                 } elsif (\$entry_field_num == 2) {  # Value
-                    (\$map_value, my \$value_consumed) = ${\ $self->_get_decode_expression_for_type($resolved_field->type->value_type, '$value', '$pos') };
+                    (\$map_value, my \$value_consumed) = ${\ $self->_get_decode_expression_for_type($file, $resolved_field->type->value_type, '$value', '$pos') };
                     \$pos += \$value_consumed;
                 } else {
                     # Skip unknown field in map entry
@@ -597,7 +597,7 @@ EOF
         # Singular field
         $code .= <<EOF;
         if (\$wire_type == ${expected_wire_type}) {
-            my (\$decoded_value, \$consumed) = ${\ $self->_get_decode_expression($resolved_field, '$value', '0') };
+            my (\$decoded_value, \$consumed) = ${\ $self->_get_decode_expression($file, $resolved_field, '$value', '0') };
 EOF
 
         if ($resolved_field->oneof) {
@@ -628,12 +628,12 @@ EOF
 }
 
 sub _get_decode_expression {
-    my ($self, $field, $value_var, $pos_var) = @_;
-    return $self->_get_decode_expression_for_type($field->type, $value_var, $pos_var);
+    my ($self, $file, $field, $value_var, $pos_var) = @_;
+    return $self->_get_decode_expression_for_type($file, $field->type, $value_var, $pos_var);
 }
 
 sub _get_decode_expression_for_type {
-    my ($self, $type, $value_var, $pos_var) = @_;
+    my ($self, $file, $type, $value_var, $pos_var) = @_;
     
     if ($type->isa('Proto::PL::AST::ScalarType')) {
         my $type_name = $type->name;
@@ -695,7 +695,7 @@ sub _get_decode_expression_for_type {
     } elsif ($type->isa('Proto::PL::AST::EnumType')) {
         return "Proto::PL::Runtime::_decode_varint(${value_var}, ${pos_var})";
     } elsif ($type->isa('Proto::PL::AST::MessageType')) {
-        my $type_name = $type->name;
+        my $type_name = $type->message->perl_package_name($self->_get_package_prefix($file));
         return "(${type_name}->decode(${value_var}), length(${value_var}))";
     }
     
