@@ -127,6 +127,11 @@ sub to_hash {
     return \%hash;
 }
 
+sub TO_JSON {
+    my ($self) = @_;
+    return $self->to_hash;
+}
+
 sub from_hash {
     my ($class, $hash) = @_;
     return $class->new(%$hash);

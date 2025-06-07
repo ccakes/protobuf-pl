@@ -136,17 +136,17 @@ EOF
     $code .= $self->_generate_helper_methods($message);
     
     # Generate encoding method
-    $code .= $self->_generate_encode_method($message);
+    $code .= $self->_generate_encode_method($message, $file);
     
     # Generate decoding method
-    $code .= $self->_generate_decode_method($message);
+    $code .= $self->_generate_decode_method($message, $file);
     
     # Generate hash conversion methods
     $code .= $self->_generate_hash_methods($message);
     
     # Generate nested messages and enums in the same file
     for my $nested (@{$message->nested_messages}) {
-        $code .= "\n" . $self->_generate_nested_message_code($nested, $package_name);
+        $code .= "\n" . $self->_generate_nested_message_code($nested, $package_name, $file);
     }
     
     for my $nested (@{$message->nested_enums}) {
@@ -308,7 +308,7 @@ EOF
 }
 
 sub _generate_encode_method {
-    my ($self, $message) = @_;
+    my ($self, $message, $file) = @_;
     
     my $code = <<'EOF';
 sub _encode_fields {
@@ -318,13 +318,7 @@ sub _encode_fields {
 EOF
 
     for my $field (@{$message->fields}) {
-        if ($field->name eq 'type') {
-            use DDP;
-            print "== DEBUG TYPE ==\n";
-            p $field;
-            print "================\n\n";
-        }
-        $code .= $self->_generate_field_encoding($field);
+        $code .= $self->_generate_field_encoding($field, $file);
     }
     
     $code .= <<'EOF';
@@ -338,10 +332,21 @@ EOF
 }
 
 sub _generate_field_encoding {
-    my ($self, $field) = @_;
+    my ($self, $field, $file) = @_;
     
-    my $name = $field->name;
-    my $number = $field->number;
+    # Resolve the field type properly
+    my $resolved_type = $self->_resolve_field_type($field, $file);
+    my $resolved_field = Proto::PL::AST::Field->new(
+        name => $field->name,
+        number => $field->number,
+        type => $resolved_type,
+        label => $field->label,
+        options => $field->options,
+        oneof => $field->oneof,
+    );
+    
+    my $name = $resolved_field->name;
+    my $number = $resolved_field->number;
     my $code = "";
     
     if ($field->is_repeated) {
@@ -414,11 +419,14 @@ EOF
             $presence_check = "";
         }
         
+        # Use proper wire type
+        my $wire_type = $field->wire_type;
+        
         $code .= <<EOF;
     # Encode field: ${name}
     if (${presence_check}defined \$self->{${name}}) {
-        \$buffer .= Proto::PL::Runtime::_encode_tag(${number}, ${\$field->wire_type});
-        \$buffer .= ${\ $self->_get_encode_expression($field, "\$self->{${name}}") };
+        \$buffer .= Proto::PL::Runtime::_encode_tag(${number}, ${wire_type});
+        \$buffer .= ${\ $self->_get_encode_expression($resolved_field, "\$self->{${name}}") };
     }
     
 EOF
@@ -472,7 +480,7 @@ sub _get_encode_expression_for_type {
 }
 
 sub _generate_decode_method {
-    my ($self, $message) = @_;
+    my ($self, $message, $file) = @_;
     
     my $code = <<'EOF';
 sub _decode_field {
@@ -481,7 +489,7 @@ sub _decode_field {
 EOF
 
     for my $field (@{$message->fields}) {
-        $code .= $self->_generate_field_decoding($field);
+        $code .= $self->_generate_field_decoding($field, $file);
     }
     
     $code .= <<'EOF';
@@ -495,31 +503,42 @@ EOF
 }
 
 sub _generate_field_decoding {
-    my ($self, $field) = @_;
+    my ($self, $field, $file) = @_;
     
-    my $name = $field->name;
-    my $number = $field->number;
-    my $expected_wire_type = $field->wire_type;
+    # Resolve the field type properly
+    my $resolved_type = $self->_resolve_field_type($field, $file);
+    my $resolved_field = Proto::PL::AST::Field->new(
+        name => $field->name,
+        number => $field->number,
+        type => $resolved_type,
+        label => $field->label,
+        options => $field->options,
+        oneof => $field->oneof,
+    );
+    
+    my $name = $resolved_field->name;
+    my $number = $resolved_field->number;
+    my $expected_wire_type = $resolved_field->wire_type;
     
     my $code = <<EOF;
     if (\$field_num == ${number}) {
 EOF
 
-    if ($field->is_repeated) {
-        if ($field->is_packed) {
+    if ($resolved_field->is_repeated) {
+        if ($resolved_field->is_packed) {
             # Packed repeated field
             $code .= <<EOF;
         if (\$wire_type == 2) {  # length-delimited (packed)
             my \$pos = 0;
             my \$len = length(\$value);
             while (\$pos < \$len) {
-                my (\$decoded_value, \$consumed) = ${\ $self->_get_decode_expression($field, '$value', '$pos') };
+                my (\$decoded_value, \$consumed) = ${\ $self->_get_decode_expression($resolved_field, '$value', '$pos') };
                 push \@{\$self->{${name}}}, \$decoded_value;
                 \$pos += \$consumed;
             }
             return 1;
         } elsif (\$wire_type == ${expected_wire_type}) {  # individual value
-            my (\$decoded_value, \$consumed) = ${\ $self->_get_decode_expression($field, '$value', '0') };
+            my (\$decoded_value, \$consumed) = ${\ $self->_get_decode_expression($resolved_field, '$value', '0') };
             push \@{\$self->{${name}}}, \$decoded_value;
             return 1;
         }
@@ -528,13 +547,13 @@ EOF
             # Regular repeated field
             $code .= <<EOF;
         if (\$wire_type == ${expected_wire_type}) {
-            my (\$decoded_value, \$consumed) = ${\ $self->_get_decode_expression($field, '$value', '0') };
+            my (\$decoded_value, \$consumed) = ${\ $self->_get_decode_expression($resolved_field, '$value', '0') };
             push \@{\$self->{${name}}}, \$decoded_value;
             return 1;
         }
 EOF
         }
-    } elsif ($field->is_map) {
+    } elsif ($resolved_field->is_map) {
         # Map field
         $code .= <<EOF;
         if (\$wire_type == 2) {  # length-delimited (map entry)
@@ -550,10 +569,10 @@ EOF
                 my \$entry_wire_type = \$tag & 0x07;
                 
                 if (\$entry_field_num == 1) {  # Key
-                    (\$key, my \$key_consumed) = ${\ $self->_get_decode_expression_for_type($field->type->key_type, '$value', '$pos') };
+                    (\$key, my \$key_consumed) = ${\ $self->_get_decode_expression_for_type($resolved_field->type->key_type, '$value', '$pos') };
                     \$pos += \$key_consumed;
                 } elsif (\$entry_field_num == 2) {  # Value
-                    (\$map_value, my \$value_consumed) = ${\ $self->_get_decode_expression_for_type($field->type->value_type, '$value', '$pos') };
+                    (\$map_value, my \$value_consumed) = ${\ $self->_get_decode_expression_for_type($resolved_field->type->value_type, '$value', '$pos') };
                     \$pos += \$value_consumed;
                 } else {
                     # Skip unknown field in map entry
@@ -579,12 +598,12 @@ EOF
         # Singular field
         $code .= <<EOF;
         if (\$wire_type == ${expected_wire_type}) {
-            my (\$decoded_value, \$consumed) = ${\ $self->_get_decode_expression($field, '$value', '0') };
+            my (\$decoded_value, \$consumed) = ${\ $self->_get_decode_expression($resolved_field, '$value', '0') };
 EOF
 
-        if ($field->oneof) {
+        if ($resolved_field->oneof) {
             # Oneof field - clear other fields in the oneof and set this one
-            my $oneof_name = $field->oneof;
+            my $oneof_name = $resolved_field->oneof;
             $code .= <<EOF;
             \$self->_clear_oneof_except('${oneof_name}', '${name}');
             \$self->{${name}} = \$decoded_value;
@@ -729,7 +748,7 @@ EOF
 }
 
 sub _generate_nested_message_code {
-    my ($self, $message, $parent_package) = @_;
+    my ($self, $message, $parent_package, $file) = @_;
     
     my $package_name = "${parent_package}::" . $message->name;
     
@@ -754,13 +773,13 @@ EOF
     # Generate helper methods for nested messages
     $code .= $self->_generate_helper_methods($message);
     
-    $code .= $self->_generate_encode_method($message);
-    $code .= $self->_generate_decode_method($message);
+    $code .= $self->_generate_encode_method($message, $file);
+    $code .= $self->_generate_decode_method($message, $file);
     $code .= $self->_generate_hash_methods($message);
     
     # Recursively generate nested types
     for my $nested (@{$message->nested_messages}) {
-        $code .= $self->_generate_nested_message_code($nested, $package_name);
+        $code .= $self->_generate_nested_message_code($nested, $package_name, $file);
     }
     
     for my $nested (@{$message->nested_enums}) {
@@ -835,7 +854,25 @@ EOF
         $code .= sprintf("    %s => %d,\n", $value->name, $value->number);
     }
     
-    $code .= "};\n\n";
+    $code .= <<'EOF';
+};
+
+# Add encode method
+sub encode {
+    my ($value) = @_;
+    require Proto::PL::Runtime;
+    return Proto::PL::Runtime::_encode_varint($value);
+}
+
+# Add decode method  
+sub decode {
+    my ($bytes) = @_;
+    require Proto::PL::Runtime;
+    my ($value, $consumed) = Proto::PL::Runtime::_decode_varint($bytes);
+    return $value;
+}
+
+EOF
     
     return $code;
 }
@@ -1013,6 +1050,37 @@ Generated by pl_protoc
 EOF
 
     return $code;
+}
+
+sub _resolve_field_type {
+    my ($self, $field, $file) = @_;
+    
+    # If it's already properly typed, return as-is
+    return $field->type unless $field->type->isa('Proto::PL::AST::MessageType');
+    
+    my $type_name = $field->type->name;
+    
+    # Look for enum with this name in the file
+    my $enum = $file->find_enum($type_name);
+    if ($enum) {
+        # Replace the MessageType with proper EnumType
+        return Proto::PL::AST::EnumType->new(
+            name => $type_name,
+            enum => $enum
+        );
+    }
+    
+    # Look for message with this name
+    my $message = $file->find_message($type_name);
+    if ($message) {
+        # Ensure it has the message reference
+        my $msg_type = $field->type;
+        $msg_type->{message} = $message unless $msg_type->{message};
+        return $msg_type;
+    }
+    
+    # If not found, return as-is (might be from another file)
+    return $field->type;
 }
 
 1;

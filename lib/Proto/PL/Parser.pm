@@ -266,9 +266,8 @@ sub _parse_type {
     # Message or enum type (dotted name)
     my $type_name = $self->_parse_dotted_name();
     
-    # For now, we'll resolve these later in the generator
-    # This is a placeholder - real implementation would need type resolution
-    return Proto::PL::AST::MessageType->new(name => $type_name);
+    # Try to resolve the type properly
+    return $self->_resolve_type($type_name, $self->{_current_context});
 }
 
 sub _parse_map_type {
@@ -310,8 +309,8 @@ sub _parse_enum {
         } elsif ($token eq 'reserved') {
             $self->_parse_reserved();  # ignore for now
         } else {
-            # Must be an enum value
-            my $value = $self->_parse_enum_value();
+            # Parse enum value
+            my $value = $self->_parse_enum_value($enum);
             push @{$enum->{values}}, $value;
         }
     }
@@ -321,7 +320,7 @@ sub _parse_enum {
 }
 
 sub _parse_enum_value {
-    my ($self) = @_;
+    my ($self, $enum) = @_;
     
     my $name = $self->_current_token();
     croak "Expected enum value name" unless $name =~ /^[a-zA-Z_]/;
@@ -336,9 +335,10 @@ sub _parse_enum_value {
     my $value = Proto::PL::AST::EnumValue->new(
         name => $name,
         number => $number,
+        parent => $enum,
     );
     
-    # Parse options
+    # Parse options if present
     if ($self->_current_token() eq '[') {
         $value->{options} = $self->_parse_field_options();
     }
@@ -355,7 +355,10 @@ sub _parse_oneof {
     croak "Expected oneof name" unless $name =~ /^[a-zA-Z_]/;
     $self->_advance();
     
-    my $oneof = Proto::PL::AST::Oneof->new(name => $name);
+    my $oneof = Proto::PL::AST::Oneof->new(
+        name => $name,
+        parent => $message,
+    );
     
     $self->_expect('{');
     
@@ -364,9 +367,9 @@ sub _parse_oneof {
         if ($token eq 'option') {
             $self->_parse_oneof_option($oneof);
         } else {
-            # Must be a field (but without optional/repeated)
+            # Parse oneof field
             my $field = $self->_parse_field($message);
-            $field->{oneof} = $name;
+            $field->{oneof} = $name;  # Mark field as part of this oneof
             push @{$oneof->{fields}}, $field;
         }
     }
@@ -377,43 +380,47 @@ sub _parse_oneof {
 
 sub _parse_dotted_name {
     my ($self) = @_;
-    my @parts;
+    my $name = $self->_current_token();
+    croak "Expected identifier" unless $name =~ /^[a-zA-Z_]/;
+    $self->_advance();
     
-    while (1) {
-        my $token = $self->_current_token();
-        croak "Expected identifier" unless $token =~ /^[a-zA-Z_]/;
-        push @parts, $token;
-        $self->_advance();
-        
-        last unless $self->_current_token() eq '.';
+    while ($self->_current_token() eq '.') {
         $self->_advance();  # consume '.'
+        my $part = $self->_current_token();
+        croak "Expected identifier after '.'" unless $part =~ /^[a-zA-Z_]/;
+        $name .= '.' . $part;
+        $self->_advance();
     }
     
-    return join('.', @parts);
+    return $name;
+}
+
+sub _resolve_type {
+    my ($self, $type_name, $context) = @_;
+    
+    # For now, return a generic MessageType - proper resolution happens in Generator
+    return Proto::PL::AST::MessageType->new(name => $type_name);
 }
 
 sub _parse_field_options {
     my ($self) = @_;
-    my %options;
-    
     $self->_expect('[');
     
-    while (1) {
-        my $name = $self->_current_token();
-        croak "Expected option name" unless $name =~ /^[a-zA-Z_]/;
-        $self->_advance();
-        
+    my $options = {};
+    
+    while ($self->_current_token() ne ']') {
+        my $option_name = $self->_parse_dotted_name();
         $self->_expect('=');
+        my $option_value = $self->_parse_option_value();
+        $options->{$option_name} = $option_value;
         
-        my $value = $self->_parse_option_value();
-        $options{$name} = $value;
-        
-        last unless $self->_current_token() eq ',';
-        $self->_advance();  # consume ','
+        if ($self->_current_token() eq ',') {
+            $self->_advance();
+        }
     }
     
     $self->_expect(']');
-    return \%options;
+    return $options;
 }
 
 sub _parse_option_value {
@@ -421,19 +428,19 @@ sub _parse_option_value {
     my $token = $self->_current_token();
     
     if ($token =~ /^["'](.*)["']$/) {
-        # String literal
+        # String value
         $self->_advance();
         return $1;
     } elsif ($token =~ /^-?\d+(?:\.\d+)?$/) {
-        # Number
+        # Numeric value
         $self->_advance();
-        return $token + 0;  # convert to number
-    } elsif ($token =~ /^(true|false)$/) {
-        # Boolean
+        return $token;
+    } elsif ($token eq 'true' || $token eq 'false') {
+        # Boolean value
         $self->_advance();
-        return $1 eq 'true' ? 1 : 0;
+        return $token eq 'true' ? 1 : 0;
     } elsif ($token =~ /^[a-zA-Z_]/) {
-        # Identifier (enum value)
+        # Identifier
         $self->_advance();
         return $token;
     } else {
@@ -441,21 +448,63 @@ sub _parse_option_value {
     }
 }
 
-# Stub methods for options we parse but don't fully implement yet
-sub _parse_file_option { shift->_skip_statement() }
-sub _parse_message_option { shift->_skip_statement() }
-sub _parse_enum_option { shift->_skip_statement() }
-sub _parse_oneof_option { shift->_skip_statement() }
-sub _parse_reserved { shift->_skip_statement() }
+sub _parse_file_option {
+    my ($self, $file) = @_;
+    $self->_advance();  # consume 'option'
+    
+    my $option_name = $self->_parse_dotted_name();
+    $self->_expect('=');
+    my $option_value = $self->_parse_option_value();
+    
+    $file->{options}{$option_name} = $option_value;
+    $self->_expect(';');
+}
 
-sub _skip_statement {
+sub _parse_message_option {
+    my ($self, $message) = @_;
+    $self->_advance();  # consume 'option'
+    
+    my $option_name = $self->_parse_dotted_name();
+    $self->_expect('=');
+    my $option_value = $self->_parse_option_value();
+    
+    $message->{options}{$option_name} = $option_value;
+    $self->_expect(';');
+}
+
+sub _parse_enum_option {
+    my ($self, $enum) = @_;
+    $self->_advance();  # consume 'option'
+    
+    my $option_name = $self->_parse_dotted_name();
+    $self->_expect('=');
+    my $option_value = $self->_parse_option_value();
+    
+    $enum->{options}{$option_name} = $option_value;
+    $self->_expect(';');
+}
+
+sub _parse_oneof_option {
+    my ($self, $oneof) = @_;
+    $self->_advance();  # consume 'option'
+    
+    my $option_name = $self->_parse_dotted_name();
+    $self->_expect('=');
+    my $option_value = $self->_parse_option_value();
+    
+    $oneof->{options}{$option_name} = $option_value;
+    $self->_expect(';');
+}
+
+sub _parse_reserved {
     my ($self) = @_;
-    # Skip until semicolon
-    my $token;
-    while (defined($token = $self->_current_token()) && $token ne ';') {
+    $self->_advance();  # consume 'reserved'
+    
+    # Skip everything until semicolon (we ignore reserved declarations for now)
+    while ($self->_current_token() ne ';') {
         $self->_advance();
     }
-    $self->_expect(';') if defined $self->_current_token();
+    $self->_expect(';');
 }
 
 1;
@@ -464,33 +513,33 @@ __END__
 
 =head1 NAME
 
-Proto::PL::Parser - Protocol Buffers .proto file parser
+Proto::PL::Parser - Protocol Buffers parser
 
 =head1 SYNOPSIS
 
     use Proto::PL::Parser;
     
     my $parser = Proto::PL::Parser->new(
-        include_paths => ['.', 'protos/'],
+        include_paths => ['.', '/usr/include']
     );
     
-    my $file = $parser->parse_file('example.proto');
+    my $ast = $parser->parse_file('example.proto');
 
 =head1 DESCRIPTION
 
-This module provides a parser for Protocol Buffers .proto files.
-It tokenizes the input and builds an Abstract Syntax Tree using
-the Proto::PL::AST classes.
+This module parses Protocol Buffers .proto files and returns an AST.
 
 =head1 METHODS
 
 =head2 new(%args)
 
-Creates a new parser. Options:
+Constructor. Accepts:
 
 =over 4
 
-=item include_paths - Array of directories to search for imported files
+=item include_paths
+
+Array ref of paths to search for imported files.
 
 =back
 
@@ -501,10 +550,5 @@ Parses a .proto file and returns a Proto::PL::AST::File object.
 =head1 AUTHOR
 
 Generated by pl_protoc
-
-=head1 LICENSE
-
-This library is free software; you can redistribute it and/or modify
-it under the same terms as Perl itself.
 
 =cut
