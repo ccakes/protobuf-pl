@@ -1,0 +1,20 @@
+-i 2      # indent is 2
+-ci 2     # continuation indent is 2
+-l 150
+-vt 0     # less vertical tightness
+-pt 2     # high parentheis tightness
+-bt 2     # high brace tightness
+-bbt 1    # horizontal tightness for code block
+-bar      # curly braces on right (not left)
+-nsbl     # above for subs
+-cti 0    # closing brace position (no indent)
+-csc
+-csci 20  # Add a comment for clarity at the end of a large block
+-sot      # don't use newline for opening token
+-nsfs     # no semicolon space in for loops
+-nolq     # no un-indent long quoted strings
+# -nanl     # don't add arbitrary newlines (right track but looks terrible, needs more options)
+
+# Ignore DBIC-generated content
+--format-skipping-begin='#(<<<| DO NOT MODIFY THE FIRST PART OF THIS FILE)'
+--format-skipping-end='#(>>>| DO NOT MODIFY THIS OR ANYTHING ABOVE!)'
