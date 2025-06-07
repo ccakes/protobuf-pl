@@ -127,6 +127,14 @@ EOF
         $code .= $self->_generate_field_accessor($field);
     }
     
+    # Generate oneof accessors and methods
+    for my $oneof (@{$message->oneofs}) {
+        $code .= $self->_generate_oneof_methods($oneof);
+    }
+    
+    # Generate helper methods
+    $code .= $self->_generate_helper_methods($message);
+    
     # Generate encoding method
     $code .= $self->_generate_encode_method($message);
     
@@ -172,6 +180,11 @@ EOF
         }
     }
     
+    # Initialize oneof tracking
+    for my $oneof (@{$message->oneofs}) {
+        $code .= sprintf("    \$self->{_oneof_%s} = undef;\n", $oneof->name);
+    }
+    
     $code .= <<'EOF';
     
     return $self;
@@ -186,6 +199,12 @@ sub _generate_field_accessor {
     my ($self, $field) = @_;
     
     my $name = $field->name;
+    
+    # Check if this field is part of a oneof
+    if ($field->oneof) {
+        return $self->_generate_oneof_field_accessor($field);
+    }
+    
     my $code = <<EOF;
 sub ${name} {
     my (\$self, \$value) = \@_;
@@ -204,6 +223,90 @@ EOF
     return $code;
 }
 
+sub _generate_oneof_field_accessor {
+    my ($self, $field) = @_;
+    my $name = $field->name;
+    my $oneof_name = $field->oneof;
+    
+    my $code = <<EOF;
+
+sub ${name} {
+    my (\$self, \$value) = \@_;
+    if (\@_ > 1) {
+        # Clear other fields in this oneof
+        \$self->_clear_oneof_except('${oneof_name}', '${name}');
+        \$self->{${name}} = \$value;
+        \$self->{_oneof_${oneof_name}} = '${name}';
+        return \$self;
+    }
+    return \$self->{${name}};
+}
+EOF
+
+    return $code;
+}
+
+sub _generate_oneof_methods {
+    my ($self, $oneof) = @_;
+    my $oneof_name = $oneof->name;
+    my @field_names = map { $_->name } @{$oneof->fields};
+    
+    my $code = <<EOF;
+
+sub which_${oneof_name} {
+    my (\$self) = \@_;
+    return \$self->{_oneof_${oneof_name}};
+}
+
+sub clear_${oneof_name} {
+    my (\$self) = \@_;
+    if (defined \$self->{_oneof_${oneof_name}}) {
+        my \$active_field = \$self->{_oneof_${oneof_name}};
+        delete \$self->{\$active_field};
+        \$self->{_oneof_${oneof_name}} = undef;
+    }
+    return \$self;
+}
+EOF
+
+    # Generate has_field methods for each field in the oneof
+    for my $field_name (@field_names) {
+        $code .= <<EOF;
+
+sub has_${field_name} {
+    my (\$self) = \@_;
+    return defined \$self->{_oneof_${oneof_name}} && \$self->{_oneof_${oneof_name}} eq '${field_name}';
+}
+EOF
+    }
+    
+    return $code;
+}
+
+sub _generate_helper_methods {
+    my ($self, $message) = @_;
+    my $code = '';
+    
+    # Generate _clear_oneof_except helper if there are oneofs
+    if (@{$message->oneofs}) {
+        $code .= <<'EOF';
+
+sub _clear_oneof_except {
+    my ($self, $oneof_name, $except_field) = @_;
+    return unless defined $self->{"_oneof_${oneof_name}"};
+    
+    my $current_field = $self->{"_oneof_${oneof_name}"};
+    return if $current_field eq $except_field;
+    
+    # Clear the current field
+    delete $self->{$current_field};
+}
+EOF
+    }
+    
+    return $code;
+}
+
 sub _generate_encode_method {
     my ($self, $message) = @_;
     
@@ -215,6 +318,12 @@ sub _encode_fields {
 EOF
 
     for my $field (@{$message->fields}) {
+        if ($field->name eq 'type') {
+            use DDP;
+            print "== DEBUG TYPE ==\n";
+            p $field;
+            print "================\n\n";
+        }
         $code .= $self->_generate_field_encoding($field);
     }
     
@@ -293,8 +402,17 @@ EOF
 EOF
     } else {
         # Singular field
-        my $presence_check = $field->is_optional ? 
-            "exists \$self->{_present}{${name}} && " : "";
+        my $presence_check;
+        
+        if ($field->oneof) {
+            # Oneof field - only encode if this field is the active one in the oneof
+            my $oneof_name = $field->oneof;
+            $presence_check = "\$self->{_oneof_${oneof_name}} eq '${name}' && ";
+        } elsif ($field->is_optional) {
+            $presence_check = "exists \$self->{_present}{${name}} && ";
+        } else {
+            $presence_check = "";
+        }
         
         $code .= <<EOF;
     # Encode field: ${name}
@@ -462,7 +580,24 @@ EOF
         $code .= <<EOF;
         if (\$wire_type == ${expected_wire_type}) {
             my (\$decoded_value, \$consumed) = ${\ $self->_get_decode_expression($field, '$value', '0') };
+EOF
+
+        if ($field->oneof) {
+            # Oneof field - clear other fields in the oneof and set this one
+            my $oneof_name = $field->oneof;
+            $code .= <<EOF;
+            \$self->_clear_oneof_except('${oneof_name}', '${name}');
             \$self->{${name}} = \$decoded_value;
+            \$self->{_oneof_${oneof_name}} = '${name}';
+EOF
+        } else {
+            # Regular singular field
+            $code .= <<EOF;
+            \$self->{${name}} = \$decoded_value;
+EOF
+        }
+
+        $code .= <<EOF;
             \$self->{_present}{${name}} = 1;
             return 1;
         }
@@ -488,7 +623,7 @@ sub _get_decode_expression_for_type {
         if ($type_name eq 'string') {
             if ($pos_var eq '0') {
                 # Regular field: value is already extracted content
-                return "Proto::PL::Runtime::_decode_string(${value_var}), length(${value_var})";
+                return "(Proto::PL::Runtime::_decode_string(${value_var}), length(${value_var}))";
             } else {
                 # Map field: need to decode length-delimited
                 return "do { my (\$len, \$len_consumed) = Proto::PL::Runtime::_decode_varint(${value_var}, ${pos_var}); my \$bytes = substr(${value_var}, ${pos_var} + \$len_consumed, \$len); (Proto::PL::Runtime::_decode_string(\$bytes), \$len_consumed + \$len) }";
@@ -513,7 +648,7 @@ sub _get_decode_expression_for_type {
             my $zigzag_func = $type_name eq 'sint32' ? '_decode_zigzag32' : '_decode_zigzag64';
             if ($pos_var eq '0') {
                 # Regular field: value is already decoded, just apply zigzag
-                return "Proto::PL::Runtime::${zigzag_func}(${value_var}), 0";
+                return "(Proto::PL::Runtime::${zigzag_func}(${value_var}), 0)";
             } else {
                 # Map field: need to decode varint then apply zigzag
                 return "do { my (\$v, \$c) = Proto::PL::Runtime::_decode_varint(${value_var}, ${pos_var}); (Proto::PL::Runtime::${zigzag_func}(\$v), \$c) }";
@@ -527,23 +662,23 @@ sub _get_decode_expression_for_type {
                 return "Proto::PL::Runtime::_decode_varint(${value_var}, ${pos_var})";
             }
         } elsif ($type_name eq 'fixed32') {
-            return "Proto::PL::Runtime::_decode_fixed32(${value_var}), 4";
+            return "(Proto::PL::Runtime::_decode_fixed32(${value_var}), 4)";
         } elsif ($type_name eq 'fixed64') {
-            return "Proto::PL::Runtime::_decode_fixed64(${value_var}), 8";
+            return "(Proto::PL::Runtime::_decode_fixed64(${value_var}), 8)";
         } elsif ($type_name eq 'sfixed32') {
-            return "Proto::PL::Runtime::_decode_sfixed32(${value_var}), 4";
+            return "(Proto::PL::Runtime::_decode_sfixed32(${value_var}), 4)";
         } elsif ($type_name eq 'sfixed64') {
-            return "Proto::PL::Runtime::_decode_sfixed64(${value_var}), 8";
+            return "(Proto::PL::Runtime::_decode_sfixed64(${value_var}), 8)";
         } elsif ($type_name eq 'float') {
-            return "Proto::PL::Runtime::_decode_float(${value_var}), 4";
+            return "(Proto::PL::Runtime::_decode_float(${value_var}), 4)";
         } elsif ($type_name eq 'double') {
-            return "Proto::PL::Runtime::_decode_double(${value_var}), 8";
+            return "(Proto::PL::Runtime::_decode_double(${value_var}), 8)";
         }
     } elsif ($type->isa('Proto::PL::AST::EnumType')) {
         return "Proto::PL::Runtime::_decode_varint(${value_var}, ${pos_var})";
     } elsif ($type->isa('Proto::PL::AST::MessageType')) {
         my $type_name = $type->name;
-        return "${type_name}->decode(${value_var}), length(${value_var})";
+        return "(${type_name}->decode(${value_var}), length(${value_var}))";
     }
     
     croak "Unknown type for decoding: " . ref($type);
@@ -568,6 +703,12 @@ EOF
         } elsif ($field->is_repeated) {
             $code .= <<EOF;
     \$hash->{${name}} = \$self->{${name}} if \$self->{${name}} && \@{\$self->{${name}}};
+EOF
+        } elsif ($field->oneof) {
+            # Oneof field - only include if this field is the active one
+            my $oneof_name = $field->oneof;
+            $code .= <<EOF;
+    \$hash->{${name}} = \$self->{${name}} if \$self->{_oneof_${oneof_name}} eq '${name}' && defined \$self->{${name}};
 EOF
         } else {
             my $presence_check = $field->is_optional ? 
@@ -604,6 +745,14 @@ EOF
     for my $field (@{$message->fields}) {
         $code .= $self->_generate_field_accessor($field);
     }
+    
+    # Generate oneof accessors and methods for nested messages
+    for my $oneof (@{$message->oneofs}) {
+        $code .= $self->_generate_oneof_methods($oneof);
+    }
+    
+    # Generate helper methods for nested messages
+    $code .= $self->_generate_helper_methods($message);
     
     $code .= $self->_generate_encode_method($message);
     $code .= $self->_generate_decode_method($message);
@@ -733,8 +882,32 @@ EOF
     for my $field (@{$message->fields}) {
         my $type_desc = ref($field->type) =~ /::(\w+)Type$/ ? $1 : 'unknown';
         my $label = $field->label || 'singular';
-        $code .= sprintf("=head2 %s (%s %s)\n\n", 
-                         $field->name, $label, lc($type_desc));
+        if ($field->oneof) {
+            $code .= sprintf("=head2 %s (%s %s, oneof: %s)\n\n", 
+                           $field->name, $label, lc($type_desc), $field->oneof);
+        } else {
+            $code .= sprintf("=head2 %s (%s %s)\n\n", 
+                           $field->name, $label, lc($type_desc));
+        }
+    }
+    
+    # Document oneofs
+    if (@{$message->oneofs}) {
+        $code .= <<'EOF';
+
+=head1 ONEOFS
+
+EOF
+        for my $oneof (@{$message->oneofs}) {
+            my $oneof_name = $oneof->name;
+            $code .= "=head2 ${oneof_name}\n\n";
+            $code .= "Fields: " . join(', ', map { $_->name } @{$oneof->fields}) . "\n\n";
+            $code .= "Methods: which_${oneof_name}(), clear_${oneof_name}()";
+            for my $field (@{$oneof->fields}) {
+                $code .= ", has_" . $field->name . "()";
+            }
+            $code .= "\n\n";
+        }
     }
     
     $code .= <<'EOF';
@@ -761,6 +934,37 @@ Returns a hash representation of the message.
 
 Class method that creates a message from a hash.
 
+EOF
+
+    # Document oneof methods
+    if (@{$message->oneofs}) {
+        for my $oneof (@{$message->oneofs}) {
+            my $oneof_name = $oneof->name;
+            $code .= <<'EOF';
+
+=head2 which_${oneof_name}()
+
+Returns the name of the currently set field in the ${oneof_name} oneof, or undef if none is set.
+
+=head2 clear_${oneof_name}()
+
+Clears all fields in the ${oneof_name} oneof.
+
+EOF
+            for my $field ($oneof->fields->@*) {
+                my $field_name = $field->name;
+                $code .= <<'EOF';
+
+=head2 has_${field_name}()
+
+Returns true if ${field_name} is the currently set field in the ${oneof_name} oneof.
+
+EOF
+            }
+        }
+    }
+
+    $code .= <<'EOF';
 =head1 AUTHOR
 
 Generated by pl_protoc
