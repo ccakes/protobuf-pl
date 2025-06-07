@@ -135,14 +135,60 @@ sub to_hash {
     return \%hash;
 }
 
-sub TO_JSON {
-    my ($self) = @_;
-    return $self->to_hash;
-}
-
 sub from_hash {
     my ($class, $hash) = @_;
     return $class->new(%$hash);
+}
+
+sub to_protojson {
+    my ($self) = @_;
+
+    my (%hash, %new_hash);
+    $self->_fields_to_hash(\%hash);
+    for my $key (keys %hash) {
+        my $val = delete $hash{$key};
+        $new_hash{_camelize($key)} = blessed $val
+            ? $val->to_protojson
+            : ref $val eq 'ARRAY'
+                ? [ map { ref $_ ? $_->to_protojson : $_ } @$val ]
+                : $val;
+    }
+
+    return \%new_hash;
+}
+
+sub from_protojson {
+    my ($class, $input) = @_;
+    
+    my %hash;
+    while (my $key = keys %$input) {
+        $hash{_decamelize($key)} = delete $input->{$key};
+    }
+    
+    return $class->new(%hash);
+}
+
+sub TO_JSON { shift->to_protojson }
+
+# Borrowed from https://metacpan.org/pod/String::CamelCase
+sub _camelize {
+    my ($string) = @_;
+
+    return lcfirst(join('', map{ ucfirst $_ } split(/(?<=[A-Za-z])_(?=[A-Za-z])|\b/, $string)));
+}
+
+sub _decamelize {
+	my ($string) = @_;
+
+	$string =~ s{([^a-zA-Z]?)([A-Z]*)([A-Z])([a-z]?)}{
+		my $fc = pos($string)==0;
+		my ($p0,$p1,$p2,$p3) = ($1,lc$2,lc$3,$4);
+		my $t = $p0 || $fc ? $p0 : '_';
+		$t .= $p3 ? $p1 ? "${p1}_$p2$p3" : "$p2$p3" : "$p1$p2";
+		$t;
+	}ge;
+
+	return $string;
 }
 
 # Stub methods to be overridden by generated code
