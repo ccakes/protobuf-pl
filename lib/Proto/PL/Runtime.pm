@@ -62,6 +62,14 @@ sub encode {
     return $buffer;
 }
 
+sub encode_length_delimited {
+    my ($self) = @_;
+    my $encoded = $self->encode();
+    
+    # Length-delimited encoding: prepend length
+    return Proto::PL::Runtime::_encode_varint(length($encoded)) . $encoded;
+}
+
 sub decode {
     my ($class, $buffer) = @_;
     my $self = $class->new();

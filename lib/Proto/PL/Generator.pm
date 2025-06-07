@@ -418,9 +418,8 @@ EOF
         } else {
             $presence_check = "";
         }
-        
-        # Use proper wire type
-        my $wire_type = $field->wire_type;
+
+        my $wire_type = $resolved_field->type->wire_type;
         
         $code .= <<EOF;
     # Encode field: ${name}
@@ -473,7 +472,7 @@ sub _get_encode_expression_for_type {
     } elsif ($type->isa('Proto::PL::AST::EnumType')) {
         return "Proto::PL::Runtime::_encode_varint(${var})";
     } elsif ($type->isa('Proto::PL::AST::MessageType')) {
-        return "${var}->encode()";
+        return "${var}->encode_length_delimited()";
     }
     
     croak "Unknown type for encoding: " . ref($type);
