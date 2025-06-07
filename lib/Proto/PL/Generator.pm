@@ -693,7 +693,13 @@ sub _get_decode_expression_for_type {
             return "(Proto::PL::Runtime::_decode_double(${value_var}), 8)";
         }
     } elsif ($type->isa('Proto::PL::AST::EnumType')) {
-        return "Proto::PL::Runtime::_decode_varint(${value_var}, ${pos_var})";
+        if ($pos_var eq '0') {
+            # Regular field: value is already decoded
+            return "${value_var}, 0";
+        } else {
+            # Map field: need to decode varint
+            return "Proto::PL::Runtime::_decode_varint(${value_var}, ${pos_var})";
+        }
     } elsif ($type->isa('Proto::PL::AST::MessageType')) {
         my $type_name = $type->message->perl_package_name($self->_get_package_prefix($file));
         return "(${type_name}->decode(${value_var}), length(${value_var}))";
