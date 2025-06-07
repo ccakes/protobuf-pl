@@ -175,9 +175,9 @@ EOF
     }
   }
 
-  # Initialize oneof tracking
+  # Initialize oneof tracking (only if not already set by constructor args)
   for my $oneof (@{$message->oneofs}) {
-    $code .= sprintf("    \$self->{_oneof_%s} = undef;\n", $oneof->name);
+    $code .= sprintf("    \$self->{_oneof_%s} = undef unless defined \$self->{_oneof_%s};\n", $oneof->name, $oneof->name);
   }
 
   $code .= <<'EOF';
@@ -413,7 +413,7 @@ EOF
 
       # Oneof field - only encode if this field is the active one in the oneof
       my $oneof_name = $field->oneof;
-      $presence_check = "\$self->{_oneof_${oneof_name}} eq '${name}' && ";
+      $presence_check = "defined \$self->{_oneof_${oneof_name}} && \$self->{_oneof_${oneof_name}} eq '${name}' && ";
     }
     elsif ($field->is_optional) {
       $presence_check = "exists \$self->{_present}{${name}} && ";
@@ -539,6 +539,17 @@ sub _generate_field_decoding {
 EOF
 
   if ($resolved_field->is_repeated) {
+    if ($resolved_field->oneof) {
+
+      # Oneof field - clear other fields in the oneof and set this one
+      my $oneof_name = $resolved_field->oneof;
+      $code .= <<EOF;
+        \$self->_clear_oneof_except('${oneof_name}', '${name}');
+        \$self->{_oneof_${oneof_name}} = '${name}';
+
+EOF
+    }
+
     if ($resolved_field->is_packed) {
 
       # Packed repeated field
@@ -560,6 +571,7 @@ EOF
 EOF
     } ## end if ($resolved_field->is_packed)
     else {
+
       # Regular repeated field
       $code .= <<EOF;
         if (\$wire_type == ${expected_wire_type}) {

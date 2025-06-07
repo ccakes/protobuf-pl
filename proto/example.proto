@@ -4,11 +4,6 @@ package example;
 
 // Simple message for testing
 message Person {
-    string name = 1;
-    int32 id = 2;
-    optional string email = 3;
-    repeated string phone_numbers = 4;
-    
     enum PhoneType {
         MOBILE = 0;
         HOME = 1;
@@ -19,10 +14,17 @@ message Person {
         string number = 1;
         PhoneType type = 2;
     }
-    
-    repeated PhoneNumber phones = 5;
-    
-    map<string, string> attributes = 6;
+
+    string name = 1;
+    int32 id = 2;
+    optional string email = 3;
+    repeated PhoneNumber phones = 4;
+    map<string, string> attributes = 5;
+
+    oneof permission {
+        bool is_admin = 6;
+        repeated string permissions = 7;
+    }
 }
 
 // Test enum at top level

@@ -1,0 +1,25 @@
+syntax = "proto3";
+
+message OneofTestMessage {
+  string name = 1;
+  
+  oneof test_oneof {
+    int32 int_value = 2;
+    string string_value = 3;
+    bool bool_value = 4;
+  }
+  
+  oneof another_oneof {
+    double double_value = 5;
+    bytes bytes_value = 6;
+  }
+  
+  int32 regular_field = 7;
+}
+
+message NestedOneofMessage {
+  oneof nested_choice {
+    OneofTestMessage message_value = 1;
+    string simple_value = 2;
+  }
+}

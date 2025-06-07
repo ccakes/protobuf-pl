@@ -383,8 +383,9 @@ sub _parse_oneof {
     else {
       # Parse oneof field
       my $field = $self->_parse_field($message);
-      $field->{oneof} = $name;    # Mark field as part of this oneof
-      push @{$oneof->{fields}}, $field;
+      $field->{oneof} = $name;               # Mark field as part of this oneof
+      push @{$oneof->{fields}},   $field;
+      push @{$message->{fields}}, $field;    # Also add to message's field list
     }
   }
 
