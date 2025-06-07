@@ -2,9 +2,10 @@ package Proto::PL::Runtime;
 
 use strict;
 use warnings;
-use Scalar::Util qw(looks_like_number blessed);
+use Carp qw(croak);
+use Encode;
 use List::Util   qw(pairs);
-use Carp         qw(croak);
+use Scalar::Util qw(looks_like_number blessed);
 
 our $VERSION = '0.01';
 
@@ -123,10 +124,20 @@ sub decode {
     # Try to decode field (implemented by generated code)
     if (!$self->_decode_field($field_num, $wire_type, $value)) {
 
-      # Store unknown field
-      push @{$self->{_unknown}{$field_num}},
-        Proto::PL::Runtime::_encode_tag($field_num, $wire_type)
-        . ($wire_type == Proto::PL::Runtime::WIRETYPE_VARINT ? Proto::PL::Runtime::_encode_varint($value) : $value);
+      # Store unknown field - preserve original wire format
+      my $tag_bytes = Proto::PL::Runtime::_encode_tag($field_num, $wire_type);
+      my $value_bytes;
+      if ($wire_type == Proto::PL::Runtime::WIRETYPE_VARINT) {
+        $value_bytes = Proto::PL::Runtime::_encode_varint($value);
+      }
+      elsif ($wire_type == Proto::PL::Runtime::WIRETYPE_LENGTH_DELIMITED) {
+        $value_bytes = Proto::PL::Runtime::_encode_varint(length($value)) . $value;
+      }
+      else {
+        # For fixed-length types, $value is already the raw bytes
+        $value_bytes = $value;
+      }
+      push @{$self->{_unknown}{$field_num}}, $tag_bytes . $value_bytes;
     }
   } ## end while ($pos < $len)
 
@@ -263,15 +274,32 @@ sub _decode_zigzag32 {
 }
 
 sub _encode_zigzag64 {
+  use bigint;
   my ($value) = @_;
+  $value = Math::BigInt->new($value);
 
-  # Perl handles 64-bit automatically on 64-bit systems
-  return ($value << 1) ^ ($value >> 63);
+  # ($n << 1) ^ ($n >> 63)
+  my $left_shift  = $value->copy()->blsft(1);
+  my $right_shift = $value->copy()->brsft(63);
+
+  return $left_shift->bxor($right_shift);
 }
 
 sub _decode_zigzag64 {
+  use bigint;
   my ($value) = @_;
-  return ($value >> 1) ^ (-($value & 1));
+  $value = Math::BigInt->new($value);
+
+  # ($n >> 1) ^ -($n & 1)
+  my $right_shift = $value->copy()->brsft(1);
+  my $masked      = $value->copy()->band(1);
+
+  if ($masked == 1) {
+    return $right_shift->bxor(Math::BigInt->new(-1));
+  }
+  else {
+    return $right_shift;
+  }
 }
 
 sub _encode_string {
@@ -279,22 +307,28 @@ sub _encode_string {
   return '' unless defined $string;
 
   # Ensure string is UTF-8 encoded
-  utf8::encode($string) if utf8::is_utf8($string);
-
+  $string = Encode::encode('UTF-8', $string, Encode::FB_CROAK | Encode::LEAVE_SRC)
+    unless Encode::is_utf8($string);
   return _encode_varint(length($string)) . $string;
 }
 
 sub _decode_string {
   my ($bytes) = @_;
 
-  # Validate UTF-8
+  # Validate UTF-8 first
+  eval { Encode::decode('UTF-8', $bytes, Encode::FB_CROAK | Encode::LEAVE_SRC); };
+  if ($@) {
+    croak "Invalid UTF-8 in string data";
+  }
+
+  # Now decode properly
   my $string = $bytes;
-  if (!utf8::decode($string)) {
-    croak "Invalid UTF-8 in string field";
+  if (not Encode::is_utf8($string)) {
+    $string = Encode::decode('UTF-8', $string);
   }
 
   return $string;
-}
+} ## end sub _decode_string
 
 sub _encode_bytes {
   my ($bytes) = @_;
