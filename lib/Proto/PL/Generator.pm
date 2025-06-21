@@ -908,6 +908,21 @@ EOF
   $code .= <<'EOF';
 );
 
+# Add encode method
+sub encode {
+    my ($value) = @_;
+    require Proto::PL::Runtime;
+    return Proto::PL::Runtime::_encode_varint($value);
+}
+
+# Add decode method
+sub decode {
+    my ($bytes) = @_;
+    require Proto::PL::Runtime;
+    my ($value, $consumed) = Proto::PL::Runtime::_decode_varint($bytes, 0);
+    return $value;
+}
+
 1;
 
 EOF
@@ -935,6 +950,17 @@ EOF
   $code .= <<'EOF';
 };
 
+# Export all constants
+our @EXPORT_OK = qw(
+EOF
+
+  for my $value (@{$enum->values}) {
+    $code .= "    " . $value->name . "\n";
+  }
+
+  $code .= <<'EOF';
+);
+
 # Add encode method
 sub encode {
     my ($value) = @_;
@@ -942,11 +968,11 @@ sub encode {
     return Proto::PL::Runtime::_encode_varint($value);
 }
 
-# Add decode method  
+# Add decode method
 sub decode {
     my ($bytes) = @_;
     require Proto::PL::Runtime;
-    my ($value, $consumed) = Proto::PL::Runtime::_decode_varint($bytes);
+    my ($value, $consumed) = Proto::PL::Runtime::_decode_varint($bytes, 0);
     return $value;
 }
 
