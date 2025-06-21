@@ -5,7 +5,7 @@ use warnings;
 use Carp qw(croak);
 use Encode;
 use List::Util   qw(pairs);
-use Scalar::Util qw(looks_like_number blessed);
+use Scalar::Util qw(blessed looks_like_number);
 
 our $VERSION = '0.01';
 
@@ -24,7 +24,7 @@ package Proto::PL::Runtime::Message;
 
 use strict;
 use warnings;
-use Scalar::Util qw(blessed);
+use Scalar::Util qw(blessed looks_like_number);
 use Carp         qw(croak);
 
 sub new {
@@ -328,7 +328,7 @@ sub _decode_string {
   }
 
   return $string;
-} ## end sub _decode_string
+}
 
 sub _encode_bytes {
   my ($bytes) = @_;
@@ -343,7 +343,10 @@ sub _encode_fixed32 {
 
 sub _decode_fixed32 {
   my ($bytes) = @_;
-  return unpack('L<', $bytes);
+  my $unpacked = unpack('L<', $bytes);
+  croak "Invalid fixed32 value" unless looks_like_number($unpacked);
+
+  return $unpacked;
 }
 
 sub _encode_fixed64 {
@@ -353,7 +356,10 @@ sub _encode_fixed64 {
 
 sub _decode_fixed64 {
   my ($bytes) = @_;
-  return unpack('Q<', $bytes);
+  my $unpacked = unpack('Q<', $bytes);
+  croak "Invalid fixed64 value" unless looks_like_number($unpacked);
+
+  return $unpacked;
 }
 
 sub _encode_sfixed32 {
@@ -363,7 +369,10 @@ sub _encode_sfixed32 {
 
 sub _decode_sfixed32 {
   my ($bytes) = @_;
-  return unpack('l<', $bytes);
+  my $unpacked = unpack('l<', $bytes);
+  croak "Invalid sfixed32 value" unless looks_like_number($unpacked);
+
+  return $unpacked;
 }
 
 sub _encode_sfixed64 {
@@ -373,7 +382,10 @@ sub _encode_sfixed64 {
 
 sub _decode_sfixed64 {
   my ($bytes) = @_;
-  return unpack('q<', $bytes);
+  my $unpacked = unpack('q<', $bytes);
+  croak "Invalid sfixed64 value" unless looks_like_number($unpacked);
+
+  return $unpacked;
 }
 
 sub _encode_float {
@@ -383,7 +395,10 @@ sub _encode_float {
 
 sub _decode_float {
   my ($bytes) = @_;
-  return unpack('f<', $bytes);
+  my $unpacked = unpack('f<', $bytes);
+  croak "Invalid float value" unless looks_like_number($unpacked);
+
+  return $unpacked;
 }
 
 sub _encode_double {
@@ -393,7 +408,10 @@ sub _encode_double {
 
 sub _decode_double {
   my ($bytes) = @_;
-  return unpack('d<', $bytes);
+  my $unpacked = unpack('d<', $bytes);
+  croak "Invalid double value" unless looks_like_number($unpacked);
+
+  return $unpacked;
 }
 
 1;
