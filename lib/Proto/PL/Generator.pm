@@ -813,7 +813,7 @@ EOF
       # Oneof field - only include if this field is the active one
       my $oneof_name = $field->oneof;
       $code .= <<EOF;
-    \$hash->{${name}} = \$self->{${name}} if \$self->{_oneof_${oneof_name}} eq '${name}' && defined \$self->{${name}};
+    \$hash->{${name}} = \$self->{${name}} if defined \$self->{_oneof_${oneof_name}} && \$self->{_oneof_${oneof_name}} eq '${name}' && defined \$self->{${name}};
 EOF
     }
     else {
@@ -898,7 +898,7 @@ EOF
 };
 
 # Export all constants
-our @EXPORT = qw(
+our @EXPORT_OK = qw(
 EOF
 
   for my $value (@{$enum->values}) {
@@ -907,14 +907,6 @@ EOF
 
   $code .= <<'EOF';
 );
-
-sub import {
-    my $caller = caller;
-    no strict 'refs';
-    for my $const (@EXPORT) {
-        *{"${caller}::${const}"} = \&{$const};
-    }
-}
 
 1;
 
