@@ -165,11 +165,7 @@ sub to_protojson {
   my (%hash, %new_hash);
   $self->_fields_to_hash(\%hash);
   for my $key (keys %hash) {
-    my $val = delete $hash{$key};
-    $new_hash{_camelize($key)} =
-        blessed $val        ? $val->to_protojson
-      : ref $val eq 'ARRAY' ? [ map { ref $_ ? $_->to_protojson : $_ } @$val ]
-      :                       $val;
+    $new_hash{_camelize($key)} = delete $hash{$key};
   }
 
   return \%new_hash;
@@ -306,28 +302,16 @@ sub _encode_string {
   my ($string) = @_;
   return '' unless defined $string;
 
-  # Ensure string is UTF-8 encoded
-  $string = Encode::encode('UTF-8', $string, Encode::FB_CROAK | Encode::LEAVE_SRC)
-    unless Encode::is_utf8($string);
-  return _encode_varint(length($string)) . $string;
+  # Takes a Perl character string and returns length-prefixed UTF-8 bytes for the wire.
+  my $bytes = Encode::encode('UTF-8', $string, Encode::FB_CROAK);
+  return _encode_varint(length($bytes)) . $bytes;
 }
 
 sub _decode_string {
   my ($bytes) = @_;
-
-  # Validate UTF-8 first
-  eval { Encode::decode('UTF-8', $bytes, Encode::FB_CROAK | Encode::LEAVE_SRC); };
-  if ($@) {
-    croak "Invalid UTF-8 in string data";
-  }
-
-  # Now decode properly
-  my $string = $bytes;
-  if (not Encode::is_utf8($string)) {
-    $string = Encode::decode('UTF-8', $string);
-  }
-
-  return $string;
+  # Takes UTF-8 bytes from the wire and returns a Perl character string (UTF-8 flag on)
+  # Will croak if the bytes are not valid UTF-8.
+  return Encode::decode('UTF-8', $bytes, Encode::FB_CROAK);
 }
 
 sub _encode_bytes {

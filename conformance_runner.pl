@@ -1,4 +1,6 @@
 #!/usr/bin/env perl
+
+use v5.30;
 use strict;
 use warnings;
 
@@ -6,16 +8,19 @@ use lib qw(lib generated);
 
 use Conformance::ConformanceRequest;
 use Conformance::ConformanceResponse;
+use Conformance::WireFormat;
 use ProtobufTestMessages::Proto3::TestAllTypesProto3;
 
+use JSON;
 use Proto::PL::Runtime;
 
 use DDP;
 
 binmode(STDIN,  ':raw');
 binmode(STDOUT, ':raw');
-
 STDOUT->autoflush;
+
+my $json = JSON->new->utf8->convert_blessed->allow_bignum;
 
 sub read_length_delimited_message {
   my $fh = shift;
@@ -63,15 +68,20 @@ while (1) {
       next;
     }
 
-    # Here you can process the test_message as needed.
-    # For demonstration, let's just echo it back.
-    $response->protobuf_payload($test_message->encode);
+    if ($request->requested_output_format == Conformance::WireFormat::PROTOBUF) {
+      $response->protobuf_payload($test_message->encode);
+    } elsif ($request->requested_output_format == Conformance::WireFormat::JSON) {
+      # say STDERR "\n== DEBUG ==\n" . $json->encode($test_message) . "\n=====";
+      $response->json_payload($json->encode($test_message));
+    } else {
+      $response->serialize_error("Unsupported output format: " . $request->requested_output_format);
+    }
+
+    write_length_delimited_message(\*STDOUT, $response->encode);
   }
   else {
     $response->skipped("Unsupported message type: " . $request->message_type);
   }
-
-  # say STDERR sprintf("test_case: %s (%s)", $test_case, $request->message_type);;
 
   # # Example: Only handle protobuf_payload and protobuf_output
   # if ($request->has_protobuf_payload) {
@@ -83,5 +93,4 @@ while (1) {
   #     $response->skipped("Only protobuf_payload is supported in this runner");
   # }
 
-  write_length_delimited_message(\*STDOUT, $response->encode);
 } ## end while (1)
