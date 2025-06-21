@@ -51,6 +51,8 @@ sub parse_file {
 sub _find_file {
   my ($self, $filename) = @_;
 
+  return $filename if -f $filename;    # Absolute path or current directory
+
   for my $path (@{$self->{include_paths}}) {
     my $full_path = File::Spec->catfile($path, $filename);
     return $full_path if -f $full_path;

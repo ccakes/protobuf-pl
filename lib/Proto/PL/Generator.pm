@@ -29,13 +29,20 @@ sub generate_all {
   }
 }
 
+# Borrowed from https://metacpan.org/pod/String::CamelCase
+sub _camelize {
+  my ($string) = @_;
+
+  return lcfirst(join('', map { ucfirst $_ } split(/(?<=[A-Za-z])_(?=[A-Za-z])|\b/, $string)));
+}
+
 sub generate_file {
   my ($self, $file) = @_;
 
   # Determine output file path
   my $package       = $file->package || '';
   my @package_parts = split /\./, $package;
-  map {s/^(.)/uc($1)/e} @package_parts;    # Capitalize each part
+  map { $_ = _camelize($_); s/^(.)/uc($1)/e } @package_parts;    # Capitalize each part
 
   my $output_path = File::Spec->catfile($self->{output_dir}, @package_parts);
 
@@ -85,8 +92,8 @@ sub _get_package_prefix {
 
   my $package = $file->package;
   $package =~ s/\./::/g;
-  $package =~ s/^(.)/uc($1)/e;        # Capitalize first letter
-  $package =~ s/::(.)/::uc($1)/ge;    # Capitalize after ::
+  $package =~ s/^(.)/uc($1)/e;    # Capitalize first letter
+                                  # $package =~ s/::(.)/::uc($1)/ge;    # Capitalize after ::
 
   return $package;
 }
@@ -688,7 +695,7 @@ sub _get_decode_expression_for_type {
       if ($pos_var eq '0') {
 
         # Regular field: value is already extracted content
-        return "${value_var}, length(${value_var})";
+        return "(${value_var}, length(${value_var}))";
       }
       else {
         # Map field: need to decode length-delimited
@@ -761,7 +768,18 @@ sub _get_decode_expression_for_type {
     }
   }
   elsif ($type->isa('Proto::PL::AST::MessageType')) {
-    my $type_name = $type->message->perl_package_name($self->_get_package_prefix($file));
+
+    # Handle case where message reference might not be set
+    my $message = $type->message;
+    if (not $message) {
+
+      # Try to resolve the type by name
+      my $type_name = $type->name;
+      $message = $file->find_message($type_name) || $file->find_enum($type_name);
+      croak "Cannot find message type: $type_name" unless $message;
+    }
+
+    my $type_name = $message->perl_package_name($self->_get_package_prefix($file));
     return "(${type_name}->decode(${value_var}), length(${value_var}))";
   }
 
