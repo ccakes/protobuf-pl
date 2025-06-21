@@ -90,7 +90,7 @@ sub _get_package_prefix {
   my ($self, $file) = @_;
   return '' unless $file->package;
 
-  my $package = $file->package;
+  my $package = _camelize($file->package);
   $package =~ s/\./::/g;
   $package =~ s/^(.)/uc($1)/e;    # Capitalize first letter
                                   # $package =~ s/::(.)/::uc($1)/ge;    # Capitalize after ::
@@ -773,9 +773,9 @@ sub _get_decode_expression_for_type {
     my $message = $type->message;
     if (not $message) {
 
-      # Try to resolve the type by name
+      # Try to resolve the type by name using import-aware resolution
       my $type_name = $type->name;
-      $message = $file->find_message($type_name) || $file->find_enum($type_name);
+      $message = $file->resolve_type($type_name);
       croak "Cannot find message type: $type_name" unless $message;
     }
 
@@ -1145,28 +1145,24 @@ sub _resolve_field_type {
 
   my $type_name = $field->type->name;
 
-  # Look for enum with this name in the file
-  my $enum = $file->find_enum($type_name);
-  if ($enum) {
+  # Use import-aware resolution
+  my $resolved_type = $file->resolve_type($type_name);
 
-    # Replace the MessageType with proper EnumType
-    return Proto::PL::AST::EnumType->new(
-      name => $type_name,
-      enum => $enum
-    );
+  if ($resolved_type) {
+    if ($resolved_type->isa('Proto::PL::AST::Enum')) {
+      return Proto::PL::AST::EnumType->new(
+        name => $type_name,
+        enum => $resolved_type
+      );
+    }
+    elsif ($resolved_type->isa('Proto::PL::AST::Message')) {
+      my $msg_type = $field->type;
+      $msg_type->{message} = $resolved_type unless $msg_type->{message};
+      return $msg_type;
+    }
   }
 
-  # Look for message with this name
-  my $message = $file->find_message($type_name);
-  if ($message) {
-
-    # Ensure it has the message reference
-    my $msg_type = $field->type;
-    $msg_type->{message} = $message unless $msg_type->{message};
-    return $msg_type;
-  }
-
-  # If not found, return as-is (might be from another file)
+  # If not found, return as-is (will cause error as before)
   return $field->type;
 } ## end sub _resolve_field_type
 

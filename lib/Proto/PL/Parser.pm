@@ -12,6 +12,7 @@ sub new {
   return bless {
     include_paths => $args{include_paths} || ['.'],
     parsed_files  => {},                              # avoid circular imports
+    import_stack  => [],                              # track import chain for cycle detection
     current_file  => undef,
     tokens        => [],
     pos           => 0,
@@ -23,6 +24,14 @@ sub parse_file {
 
   # Check if already parsed (avoid cycles)
   return $self->{parsed_files}{$filename} if exists $self->{parsed_files}{$filename};
+
+  # Detect circular imports
+  if (grep { $_ eq $filename } @{$self->{import_stack}}) {
+    croak "Circular import detected: " . join(' -> ', @{$self->{import_stack}}, $filename);
+  }
+
+  # Add to import stack
+  push @{$self->{import_stack}}, $filename;
 
   # Find file in include paths
   my $full_path = $self->_find_file($filename);
@@ -42,8 +51,14 @@ sub parse_file {
   my $file = $self->_parse_file();
   $file->{filename} = $filename;
 
-  # Store result
+  # Mark as parsed before processing imports to handle self-references
   $self->{parsed_files}{$filename} = $file;
+
+  # Process imports
+  $self->_process_imports($file);
+
+  # Remove from import stack
+  pop @{$self->{import_stack}};
 
   return $file;
 } ## end sub parse_file
@@ -75,6 +90,19 @@ sub _tokenize {
   }
 
   return \@tokens;
+}
+
+sub _process_imports {
+  my ($self, $file) = @_;
+
+  for my $import_file (@{$file->imports}) {
+
+    # Parse the imported file recursively
+    my $imported_ast = $self->parse_file($import_file);
+
+    # Add to file's import registry
+    $file->add_imported_file($imported_ast);
+  }
 }
 
 sub _current_token {
@@ -416,6 +444,7 @@ sub _resolve_type {
   my ($self, $type_name, $context) = @_;
 
   # For now, return a generic MessageType - proper resolution happens in Generator
+  # This will be resolved later using the import-aware methods
   return Proto::PL::AST::MessageType->new(name => $type_name);
 }
 

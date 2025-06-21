@@ -26,13 +26,15 @@ __PACKAGE__->_accessor('imports');
 __PACKAGE__->_accessor('messages');
 __PACKAGE__->_accessor('enums');
 __PACKAGE__->_accessor('options');
+__PACKAGE__->_accessor('imported_files');
 
 sub new {
   my ($class, %args) = @_;
-  $args{imports}  ||= [];
-  $args{messages} ||= [];
-  $args{enums}    ||= [];
-  $args{options}  ||= {};
+  $args{imports}        ||= [];
+  $args{messages}       ||= [];
+  $args{enums}          ||= [];
+  $args{options}        ||= {};
+  $args{imported_files} ||= {};
   return $class->SUPER::new(%args);
 }
 
@@ -63,6 +65,93 @@ sub find_enum {
   }
   return undef;
 }
+
+sub add_imported_file {
+  my ($self, $imported_file) = @_;
+  $self->{imported_files}{$imported_file->filename} = $imported_file;
+}
+
+sub get_imported_file {
+  my ($self, $filename) = @_;
+  return $self->{imported_files}{$filename};
+}
+
+sub get_all_imported_files {
+  my ($self) = @_;
+  return values %{$self->{imported_files}};
+}
+
+sub find_message_with_imports {
+  my ($self, $name) = @_;
+
+  # First check local messages
+  my $local_msg = $self->find_message($name);
+  return $local_msg if $local_msg;
+
+  # Then check imported files
+  for my $imported_file (values %{$self->{imported_files}}) {
+    my $imported_msg = $imported_file->find_message_with_imports($name);
+    return $imported_msg if $imported_msg;
+  }
+
+  return undef;
+}
+
+sub find_enum_with_imports {
+  my ($self, $name) = @_;
+
+  # First check local enums
+  my $local_enum = $self->find_enum($name);
+  return $local_enum if $local_enum;
+
+  # Then check imported files
+  for my $imported_file (values %{$self->{imported_files}}) {
+    my $imported_enum = $imported_file->find_enum_with_imports($name);
+    return $imported_enum if $imported_enum;
+  }
+
+  return undef;
+}
+
+sub resolve_type {
+  my ($self, $type_name) = @_;
+
+  # Handle fully qualified names (e.g., "google.protobuf.NullValue")
+  if ($type_name =~ /\./) {
+    return $self->_resolve_qualified_type($type_name);
+  }
+
+  # Handle simple names - check local then imports
+  my $message = $self->find_message_with_imports($type_name);
+  return $message if $message;
+
+  my $enum = $self->find_enum_with_imports($type_name);
+  return $enum if $enum;
+
+  return undef;
+}
+
+sub _resolve_qualified_type {
+  my ($self, $qualified_name) = @_;
+
+  # Split into package and type name
+  my @parts     = split /\./, $qualified_name;
+  my $type_name = pop @parts;
+  my $package   = join('.', @parts);
+
+  # Search in files with matching package
+  for my $imported_file (values %{$self->{imported_files}}) {
+    next unless $imported_file->package && $imported_file->package eq $package;
+
+    my $message = $imported_file->find_message($type_name);
+    return $message if $message;
+
+    my $enum = $imported_file->find_enum($type_name);
+    return $enum if $enum;
+  }
+
+  return undef;
+} ## end sub _resolve_qualified_type
 
 package Proto::PL::AST::Message;
 our @ISA = qw(Proto::PL::AST::Node);
