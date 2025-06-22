@@ -11,6 +11,8 @@ use POSIX qw(mkfifo);
 use Fcntl qw(O_NONBLOCK);
 
 use Example::Person;
+use Example::Person::PhoneNumber;
+use Example::Person::PhoneType;
 
 # Test UDP socket communication
 subtest 'UDP socket communication' => sub {

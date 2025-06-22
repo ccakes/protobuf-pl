@@ -7,6 +7,8 @@ use FindBin;
 use lib "$FindBin::Bin/lib";
 
 use Example::Person;
+use Example::Person::PhoneNumber;
+use Example::Person::PhoneType;
 use Example::Status;
 
 # Test encode/decode round trip with all fields

@@ -1,20 +1,20 @@
-package Example::Status;
+package Example::Person::PhoneType;
 
 use strict;
 use warnings;
 
 # Enum values
 use constant {
-    UNKNOWN => 0,
-    ACTIVE => 1,
-    INACTIVE => 2,
+    MOBILE => 0,
+    HOME => 1,
+    WORK => 2,
 };
 
 # Export all constants
 our @EXPORT_OK = qw(
-    UNKNOWN
-    ACTIVE
-    INACTIVE
+    MOBILE
+    HOME
+    WORK
 );
 
 # Add encode method
@@ -38,11 +38,11 @@ __END__
 
 =head1 NAME
 
-Example::Status - Protocol Buffers enum
+Example::Person::PhoneType - Protocol Buffers enum
 
 =head1 SYNOPSIS
 
-    use Example::Status;
+    use Example::Person::PhoneType;
     
     my $value = RED;  # Imported constant
 
@@ -52,11 +52,11 @@ This module defines constants for a Protocol Buffers enum.
 
 =head1 VALUES
 
-=head2 UNKNOWN = 0
+=head2 MOBILE = 0
 
-=head2 ACTIVE = 1
+=head2 HOME = 1
 
-=head2 INACTIVE = 2
+=head2 WORK = 2
 
 
 =head1 AUTHOR

@@ -9,6 +9,7 @@ use FindBin;
 use lib "$FindBin::Bin/lib";
 
 use Example::Person;
+use Example::Person::PhoneNumber;
 
 binmode Test::More->builder->output,         ':encoding(UTF-8)';
 binmode Test::More->builder->failure_output, ':encoding(UTF-8)';

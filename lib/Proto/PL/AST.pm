@@ -42,11 +42,6 @@ sub find_message {
   my ($self, $name) = @_;
   for my $msg (@{$self->messages}) {
     return $msg if $msg->name eq $name;
-
-    # Check nested messages
-    if (my $nested = $msg->find_nested_message($name)) {
-      return $nested;
-    }
   }
   return undef;
 }
@@ -55,13 +50,6 @@ sub find_enum {
   my ($self, $name) = @_;
   for my $enum (@{$self->enums}) {
     return $enum if $enum->name eq $name;
-  }
-
-  # Check nested enums in messages
-  for my $msg (@{$self->messages}) {
-    if (my $nested = $msg->find_nested_enum($name)) {
-      return $nested;
-    }
   }
   return undef;
 }
@@ -116,17 +104,17 @@ sub find_enum_with_imports {
 sub resolve_type {
   my ($self, $type_name) = @_;
 
-  # Handle fully qualified names (e.g., "google.protobuf.NullValue")
-  if ($type_name =~ /\./) {
-    return $self->_resolve_qualified_type($type_name);
-  }
-
-  # Handle simple names - check local then imports
+  # First try direct lookup (works for both simple and qualified names)
   my $message = $self->find_message_with_imports($type_name);
   return $message if $message;
 
   my $enum = $self->find_enum_with_imports($type_name);
   return $enum if $enum;
+
+  # For qualified names, also try looking in imported files by package
+  if ($type_name =~ /\./) {
+    return $self->_resolve_qualified_type($type_name);
+  }
 
   return undef;
 }
@@ -158,8 +146,6 @@ our @ISA = qw(Proto::PL::AST::Node);
 
 __PACKAGE__->_accessor('name');
 __PACKAGE__->_accessor('fields');
-__PACKAGE__->_accessor('nested_messages');
-__PACKAGE__->_accessor('nested_enums');
 __PACKAGE__->_accessor('oneofs');
 __PACKAGE__->_accessor('options');
 __PACKAGE__->_accessor('parent');
@@ -167,8 +153,6 @@ __PACKAGE__->_accessor('parent');
 sub new {
   my ($class, %args) = @_;
   $args{fields}          ||= [];
-  $args{nested_messages} ||= [];
-  $args{nested_enums}    ||= [];
   $args{oneofs}          ||= [];
   $args{options}         ||= {};
   return $class->SUPER::new(%args);
@@ -182,48 +166,22 @@ sub find_field {
   return undef;
 }
 
-sub find_nested_message {
-  my ($self, $name) = @_;
-  for my $msg (@{$self->nested_messages}) {
-    return $msg if $msg->name eq $name;
-
-    # Recursively search in nested messages
-    if (my $nested = $msg->find_nested_message($name)) {
-      return $nested;
-    }
-  }
-  return undef;
-}
-
-sub find_nested_enum {
-  my ($self, $name) = @_;
-  for my $enum (@{$self->nested_enums}) {
-    return $enum if $enum->name eq $name;
-  }
-
-  # Recursively search in nested messages
-  for my $msg (@{$self->nested_messages}) {
-    if (my $nested = $msg->find_nested_enum($name)) {
-      return $nested;
-    }
-  }
-  return undef;
-}
-
-sub full_name {
+sub qualified_name {
   my ($self) = @_;
-  my @parts  = ($self->name);
-  my $parent = $self->parent;
-  while ($parent && $parent->isa('Proto::PL::AST::Message')) {
-    unshift @parts, $parent->name;
-    $parent = $parent->parent;
+
+  my $qualified_name = $self->name;
+  my $ptr = $self;
+  while (defined $ptr->parent) {
+    $qualified_name = $ptr->parent->name . '.' . $qualified_name;
+    $ptr = $ptr->parent;
   }
-  return join('.', @parts);
+
+  return $qualified_name;
 }
 
 sub perl_package_name {
   my ($self, $base_package) = @_;
-  my $full_name = $self->full_name;
+  my $full_name = $self->qualified_name;  # Use name directly since it's already qualified
   $full_name =~ s/\./::/g;
   return $base_package ? "${base_package}::${full_name}" : $full_name;
 }
@@ -313,20 +271,22 @@ sub find_value {
   return undef;
 }
 
-sub full_name {
+sub qualified_name {
   my ($self) = @_;
-  my @parts  = ($self->name);
-  my $parent = $self->parent;
-  while ($parent && $parent->isa('Proto::PL::AST::Message')) {
-    unshift @parts, $parent->name;
-    $parent = $parent->parent;
+
+  my $qualified_name = $self->name;
+  my $ptr = $self;
+  while (defined $ptr->parent) {
+    $qualified_name = $ptr->parent->name . '.' . $qualified_name;
+    $ptr = $ptr->parent;
   }
-  return join('.', @parts);
+
+  return $qualified_name;
 }
 
 sub perl_package_name {
   my ($self, $base_package) = @_;
-  my $full_name = $self->full_name;
+  my $full_name = $self->qualified_name;  # Use name directly since it's already qualified
   $full_name =~ s/\./::/g;
   return $base_package ? "${base_package}::${full_name}" : $full_name;
 }

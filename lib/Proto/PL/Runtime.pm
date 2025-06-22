@@ -182,13 +182,14 @@ sub from_protojson {
   return $class->new(%hash);
 }
 
-sub TO_JSON { shift->to_protojson }
+sub TO_JSON { shift->_to_protojson }
 
 # Borrowed from https://metacpan.org/pod/String::CamelCase
 sub _camelize {
   my ($string) = @_;
 
-  return lcfirst(join('', map { ucfirst $_ } split(/(?<=[A-Za-z])_(?=[A-Za-z])|\b/, $string)));
+  # return lcfirst(join('', map { ucfirst $_ } split(/(?<=[A-Za-z])_(?=[A-Za-z])|\b/, $string)));
+  return lcfirst(join('', map { ucfirst $_ } split('_', $string)));
 }
 
 sub _decamelize {
@@ -209,6 +210,7 @@ sub _decamelize {
 sub _encode_fields  { return '' }
 sub _decode_field   { return 0 }    # return 1 if handled, 0 if unknown
 sub _fields_to_hash { }
+sub _to_protojson { }
 
 # Utility functions for wire format encoding/decoding
 package Proto::PL::Runtime;

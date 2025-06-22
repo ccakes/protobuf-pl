@@ -62,7 +62,15 @@ sub _generate_message_file {
   my ($self, $message, $file, $output_path) = @_;
 
   my $package_prefix = $self->_get_package_prefix($file);
-  my $filename       = File::Spec->catfile($output_path, $message->name . '.pm');
+  
+  # Convert qualified name to file path (Person.PhoneType -> Person/PhoneType.pm)
+  my $message_name = $message->qualified_name;
+  my @name_parts = split /\./, $message_name;
+  my $filename = File::Spec->catfile($output_path, @name_parts) . '.pm';
+
+  # Ensure the directory exists
+  my $dir = File::Spec->catdir($output_path, @name_parts[0..$#name_parts-1]);
+  make_path($dir) if @name_parts > 1;
 
   my $code = $self->_generate_message_code($message, $package_prefix, $file);
 
@@ -76,7 +84,15 @@ sub _generate_enum_file {
   my ($self, $enum, $file, $output_path) = @_;
 
   my $package_prefix = $self->_get_package_prefix($file);
-  my $filename       = File::Spec->catfile($output_path, $enum->name . '.pm');
+  
+  # Convert qualified name to file path (Person.PhoneType -> Person/PhoneType.pm)
+  my $enum_name = $enum->qualified_name;
+  my @name_parts = split /\./, $enum_name;
+  my $filename = File::Spec->catfile($output_path, @name_parts) . '.pm';
+
+  # Ensure the directory exists
+  my $dir = File::Spec->catdir($output_path, @name_parts[0..$#name_parts-1]);
+  make_path($dir) if @name_parts > 1;
 
   my $code = $self->_generate_enum_code($enum, $package_prefix);
 
@@ -115,6 +131,14 @@ our \@ISA = qw(Proto::PL::Runtime::Message);
 
 EOF
 
+  # Add use statements for nested messages and enums.
+  for my $candidate (@{$file->messages}, @{$file->enums}) {
+    if (defined $candidate->parent && $candidate->parent eq $message) {
+      $code .= "use ${package_prefix}::" . $candidate->perl_package_name() . ";\n";
+    }
+  }
+  $code .= "\n";
+
   # Generate field constants
   my %field_numbers = map { $_->name => $_->number } @{$message->fields};
   for my $field (@{$message->fields}) {
@@ -146,15 +170,6 @@ EOF
 
   # Generate hash conversion methods
   $code .= $self->_generate_hash_methods($message);
-
-  # Generate nested messages and enums in the same file
-  for my $nested (@{$message->nested_messages}) {
-    $code .= "\n" . $self->_generate_nested_message_code($nested, $package_name, $file);
-  }
-
-  for my $nested (@{$message->nested_enums}) {
-    $code .= "\n" . $self->_generate_nested_enum_code($nested, $package_name);
-  }
 
   $code .= "\n1;\n\n";
   $code .= $self->_generate_pod_documentation($message, $package_name);
@@ -791,7 +806,8 @@ sub _generate_hash_methods {
 
   my $code = <<'EOF';
 sub _fields_to_hash {
-    my ($self, $hash) = @_;
+    my ($self) = @_;
+    my %hash;
     
 EOF
 
@@ -800,12 +816,12 @@ EOF
 
     if ($field->is_map) {
       $code .= <<EOF;
-    \$hash->{${name}} = \$self->{${name}} if \$self->{${name}} && \%{\$self->{${name}}};
+  \$hash{${name}} = \$self->{${name}} if \$self->{${name}} && \%{\$self->{${name}}};
 EOF
     }
     elsif ($field->is_repeated) {
       $code .= <<EOF;
-    \$hash->{${name}} = \$self->{${name}} if \$self->{${name}} && \@{\$self->{${name}}};
+   \$hash{${name}} = \$self->{${name}} if \$self->{${name}} && \@{\$self->{${name}}};
 EOF
     }
     elsif ($field->oneof) {
@@ -813,67 +829,70 @@ EOF
       # Oneof field - only include if this field is the active one
       my $oneof_name = $field->oneof;
       $code .= <<EOF;
-    \$hash->{${name}} = \$self->{${name}} if defined \$self->{_oneof_${oneof_name}} && \$self->{_oneof_${oneof_name}} eq '${name}' && defined \$self->{${name}};
+  \$hash{${name}} = \$self->{${name}} if defined \$self->{_oneof_${oneof_name}} && \$self->{_oneof_${oneof_name}} eq '${name}' && defined \$self->{${name}};
 EOF
     }
     else {
       my $presence_check = $field->is_optional ? "exists \$self->{_present}{${name}} && " : "";
 
       $code .= <<EOF;
-    \$hash->{${name}} = \$self->{${name}} if ${presence_check}defined \$self->{${name}};
+  \$hash{${name}} = \$self->{${name}} if ${presence_check}defined \$self->{${name}};
 EOF
     }
   } ## end for my $field (@{$message...})
 
   $code .= <<'EOF';
+
+  return \%hash;
+}
+
+sub _to_protojson {
+  my ($self) = @_;
+  my %hash;
+
+EOF
+
+  for my $field (@{$message->fields}) {
+    my $name = $field->name;
+    my $protoname = lcfirst(join('', map { ucfirst $_ } split('_', $field->name)));
+
+    if ($field->is_map) {
+      $code .= <<EOF;
+  \$hash{${protoname}} = \$self->{${name}} if \$self->{${name}} && \%{\$self->{${name}}};
+EOF
+    }
+    elsif ($field->is_repeated) {
+      $code .= <<EOF;
+  \$hash{${protoname}} = \$self->{${name}} if \$self->{${name}} && \@{\$self->{${name}}};
+EOF
+    }
+    elsif ($field->oneof) {
+
+      # Oneof field - only include if this field is the active one
+      my $oneof_name = $field->oneof;
+      $code .= <<EOF;
+  \$hash{${protoname}} = \$self->{${name}} if defined \$self->{_oneof_${oneof_name}} && \$self->{_oneof_${oneof_name}} eq '${name}' && defined \$self->{${name}};
+EOF
+    }
+    else {
+      my $presence_check = $field->is_optional ? "exists \$self->{_present}{${name}} && " : "";
+      my $ref_val = $field->type->name eq 'bool' ? '\\': '';
+
+      $code .= <<EOF;
+  \$hash{${protoname}} = ${ref_val}\$self->{${name}} if ${presence_check}defined \$self->{${name}};
+EOF
+    }
+  } ## end for my $field (@{$message...})
+
+  $code .=<<'EOF';
+
+  return \%hash;
 }
 
 EOF
 
   return $code;
 } ## end sub _generate_hash_methods
-
-sub _generate_nested_message_code {
-  my ($self, $message, $parent_package, $file) = @_;
-
-  my $package_name = "${parent_package}::" . $message->name;
-
-  my $code = <<EOF;
-package ${package_name};
-our \@ISA = qw(Proto::PL::Runtime::Message);
-
-EOF
-
-  # Generate the same structure as top-level messages
-  $code .= $self->_generate_constructor($message);
-
-  for my $field (@{$message->fields}) {
-    $code .= $self->_generate_field_accessor($field);
-  }
-
-  # Generate oneof accessors and methods for nested messages
-  for my $oneof (@{$message->oneofs}) {
-    $code .= $self->_generate_oneof_methods($oneof);
-  }
-
-  # Generate helper methods for nested messages
-  $code .= $self->_generate_helper_methods($message);
-
-  $code .= $self->_generate_encode_method($message, $file);
-  $code .= $self->_generate_decode_method($message, $file);
-  $code .= $self->_generate_hash_methods($message);
-
-  # Recursively generate nested types
-  for my $nested (@{$message->nested_messages}) {
-    $code .= $self->_generate_nested_message_code($nested, $package_name, $file);
-  }
-
-  for my $nested (@{$message->nested_enums}) {
-    $code .= $self->_generate_nested_enum_code($nested, $package_name);
-  }
-
-  return $code;
-} ## end sub _generate_nested_message_code
 
 sub _generate_enum_code {
   my ($self, $enum, $package_prefix) = @_;
@@ -931,55 +950,6 @@ EOF
 
   return $code;
 } ## end sub _generate_enum_code
-
-sub _generate_nested_enum_code {
-  my ($self, $enum, $parent_package) = @_;
-
-  my $package_name = "${parent_package}::" . $enum->name;
-
-  my $code = <<EOF;
-package ${package_name};
-
-use constant {
-EOF
-
-  for my $value (@{$enum->values}) {
-    $code .= sprintf("    %s => %d,\n", $value->name, $value->number);
-  }
-
-  $code .= <<'EOF';
-};
-
-# Export all constants
-our @EXPORT_OK = qw(
-EOF
-
-  for my $value (@{$enum->values}) {
-    $code .= "    " . $value->name . "\n";
-  }
-
-  $code .= <<'EOF';
-);
-
-# Add encode method
-sub encode {
-    my ($value) = @_;
-    require Proto::PL::Runtime;
-    return Proto::PL::Runtime::_encode_varint($value);
-}
-
-# Add decode method
-sub decode {
-    my ($bytes) = @_;
-    require Proto::PL::Runtime;
-    my ($value, $consumed) = Proto::PL::Runtime::_decode_varint($bytes, 0);
-    return $value;
-}
-
-EOF
-
-  return $code;
-} ## end sub _generate_nested_enum_code
 
 sub _generate_pod_documentation {
   my ($self, $message, $package_name) = @_;

@@ -7,6 +7,9 @@ use Carp qw(croak);
 
 our @ISA = qw(Proto::PL::Runtime::Message);
 
+use Example::Person::PhoneNumber;
+use Example::Person::PhoneType;
+
 use constant FIELD_NAME => 1;
 use constant FIELD_ID => 2;
 use constant FIELD_EMAIL => 3;
@@ -332,121 +335,8 @@ sub _fields_to_hash {
     $hash->{email} = $self->{email} if exists $self->{_present}{email} && defined $self->{email};
     $hash->{phones} = $self->{phones} if $self->{phones} && @{$self->{phones}};
     $hash->{attributes} = $self->{attributes} if $self->{attributes} && %{$self->{attributes}};
-    $hash->{is_admin} = $self->{is_admin} if $self->{_oneof_permission} eq 'is_admin' && defined $self->{is_admin};
+    $hash->{is_admin} = $self->{is_admin} if defined $self->{_oneof_permission} && $self->{_oneof_permission} eq 'is_admin' && defined $self->{is_admin};
     $hash->{permissions} = $self->{permissions} if $self->{permissions} && @{$self->{permissions}};
-}
-
-
-package Example::Person::PhoneNumber;
-our @ISA = qw(Proto::PL::Runtime::Message);
-
-sub new {
-    my ($class, %args) = @_;
-    my $self = $class->SUPER::new(%args);
-    
-    # Initialize field values
-    
-    return $self;
-}
-
-sub number {
-    my ($self, $value) = @_;
-    
-    if (@_ > 1) {
-        $self->{number} = $value;
-        $self->{_present}{number} = 1;
-        return $self;
-    }
-    
-    return $self->{number};
-}
-
-sub type {
-    my ($self, $value) = @_;
-    
-    if (@_ > 1) {
-        $self->{type} = $value;
-        $self->{_present}{type} = 1;
-        return $self;
-    }
-    
-    return $self->{type};
-}
-
-sub _encode_fields {
-    my ($self) = @_;
-    my $buffer = '';
-    
-    # Encode field: number
-    if (defined $self->{number}) {
-        $buffer .= Proto::PL::Runtime::_encode_tag(1, 2);
-        $buffer .= Proto::PL::Runtime::_encode_string($self->{number});
-    }
-    
-    # Encode field: type
-    if (defined $self->{type}) {
-        $buffer .= Proto::PL::Runtime::_encode_tag(2, 0);
-        $buffer .= Proto::PL::Runtime::_encode_varint($self->{type});
-    }
-    
-    
-    return $buffer;
-}
-
-sub _decode_field {
-    my ($self, $field_num, $wire_type, $value) = @_;
-    
-    if ($field_num == 1) {
-        if ($wire_type == 2) {
-            my ($decoded_value, $consumed) = (Proto::PL::Runtime::_decode_string($value), length($value));
-            $self->{number} = $decoded_value;
-            $self->{_present}{number} = 1;
-            return 1;
-        }
-    }
-    
-    if ($field_num == 2) {
-        if ($wire_type == 0) {
-            my ($decoded_value, $consumed) = $value, 0;
-            $self->{type} = $decoded_value;
-            $self->{_present}{type} = 1;
-            return 1;
-        }
-    }
-    
-    
-    return 0;  # Unknown field
-}
-
-sub _fields_to_hash {
-    my ($self, $hash) = @_;
-    
-    $hash->{number} = $self->{number} if defined $self->{number};
-    $hash->{type} = $self->{type} if defined $self->{type};
-}
-
-
-package Example::Person::PhoneType;
-
-use constant {
-    MOBILE => 0,
-    HOME => 1,
-    WORK => 2,
-};
-
-# Add encode method
-sub encode {
-    my ($value) = @_;
-    require Proto::PL::Runtime;
-    return Proto::PL::Runtime::_encode_varint($value);
-}
-
-# Add decode method  
-sub decode {
-    my ($bytes) = @_;
-    require Proto::PL::Runtime;
-    my ($value, $consumed) = Proto::PL::Runtime::_decode_varint($bytes);
-    return $value;
 }
 
 

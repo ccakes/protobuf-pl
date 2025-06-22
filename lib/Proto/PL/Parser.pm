@@ -54,8 +54,14 @@ sub parse_file {
   # Mark as parsed before processing imports to handle self-references
   $self->{parsed_files}{$filename} = $file;
 
+  # use DDP;
+  # p $file, as => $filename, class => {expand => 3};
+
   # Process imports
   $self->_process_imports($file);
+
+  # Clean up temporary reference
+  delete $self->{_current_file_ast};
 
   # Remove from import stack
   pop @{$self->{import_stack}};
@@ -127,6 +133,9 @@ sub _parse_file {
   my ($self) = @_;
   my $file = Proto::PL::AST::File->new();
 
+  # Store reference to current file for nested type flattening
+  $self->{_current_file_ast} = $file;
+
   while (defined(my $token = $self->_current_token())) {
     if ($token eq 'syntax') {
       $self->_parse_syntax($file);
@@ -138,10 +147,10 @@ sub _parse_file {
       $self->_parse_import($file);
     }
     elsif ($token eq 'message') {
-      push @{$file->{messages}}, $self->_parse_message();
+      push @{$file->{messages}}, $self->_parse_message(undef, '');
     }
     elsif ($token eq 'enum') {
-      push @{$file->{enums}}, $self->_parse_enum();
+      push @{$file->{enums}}, $self->_parse_enum(undef, '');
     }
     elsif ($token eq 'option') {
       $self->_parse_file_option($file);
@@ -208,12 +217,16 @@ sub _parse_message {
   my $token;
   while (defined($token = $self->_current_token()) && $token ne '}') {
     if ($token eq 'message') {
+
+      # Parse nested message and add to top-level file
       my $nested = $self->_parse_message($message);
-      push @{$message->{nested_messages}}, $nested;
+      push @{$self->{_current_file_ast}{messages}}, $nested;
     }
     elsif ($token eq 'enum') {
+
+      # Parse nested enum and add to top-level file
       my $nested = $self->_parse_enum($message);
-      push @{$message->{nested_enums}}, $nested;
+      push @{$self->{_current_file_ast}{enums}}, $nested;
     }
     elsif ($token eq 'oneof') {
       my $oneof = $self->_parse_oneof($message);
@@ -233,6 +246,7 @@ sub _parse_message {
   } ## end while (defined($token = $self...))
 
   $self->_expect('}');
+
   return $message;
 } ## end sub _parse_message
 
@@ -307,8 +321,8 @@ sub _parse_type {
   # Message or enum type (dotted name)
   my $type_name = $self->_parse_dotted_name();
 
-  # Try to resolve the type properly
-  return $self->_resolve_type($type_name, $self->{_current_context});
+  # Try to resolve the type properly with current context
+  return $self->_resolve_type($type_name, $self->{_current_message_context});
 } ## end sub _parse_type
 
 sub _parse_map_type {
@@ -329,15 +343,18 @@ sub _parse_map_type {
 }
 
 sub _parse_enum {
-  my ($self, $parent) = @_;
+  my ($self, $parent, $parent_name_prefix) = @_;
   $self->_advance();    # consume 'enum'
 
   my $name = $self->_current_token();
   croak "Expected enum name" unless $name =~ /^[a-zA-Z_]/;
   $self->_advance();
 
+  # Create qualified name for nested enums
+  my $qualified_name = $parent_name_prefix ? "${parent_name_prefix}.${name}" : $name;
+
   my $enum = Proto::PL::AST::Enum->new(
-    name   => $name,
+    name   => $qualified_name,
     parent => $parent,
   );
 
@@ -441,12 +458,30 @@ sub _parse_dotted_name {
 }
 
 sub _resolve_type {
-  my ($self, $type_name, $context) = @_;
+  my ($self, $type_name) = @_;
 
-  # For now, return a generic MessageType - proper resolution happens in Generator
-  # This will be resolved later using the import-aware methods
+  # If type_name contains dots, it's already qualified
+  if ($type_name =~ /\./) {
+    return Proto::PL::AST::MessageType->new(name => $type_name);
+  }
+
+  my $file = $self->{_current_file_ast};
+  for my $msg (@{$file->messages}) {
+    if ($msg->name eq $type_name) {
+      return Proto::PL::AST::MessageType->new(name => $type_name);
+    }
+  }
+
+  # Check enums
+  for my $enum (@{$file->enums}) {
+    if ($enum->name eq $type_name) {
+      return Proto::PL::AST::EnumType->new(name => $type_name);
+    }
+  }
+
+  # Fall back to unqualified name (for resolution later in Generator)
   return Proto::PL::AST::MessageType->new(name => $type_name);
-}
+} ## end sub _resolve_type
 
 sub _parse_field_options {
   my ($self) = @_;

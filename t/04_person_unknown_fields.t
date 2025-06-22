@@ -7,6 +7,8 @@ use FindBin;
 use lib "$FindBin::Bin/lib";
 
 use Example::Person;
+use Example::Person::PhoneNumber;
+use Example::Person::PhoneType;
 
 # Test unknown field preservation during round-trip encoding/decoding
 subtest 'Unknown field preservation' => sub {
@@ -52,9 +54,6 @@ subtest 'Unknown field preservation' => sub {
   # Verify unknown fields are stored
   ok(exists $decoded->{_unknown},              'Unknown fields hash exists');
   ok(scalar(keys %{$decoded->{_unknown}}) > 0, 'Unknown fields were preserved');
-
-  use Data::Dumper;
-  diag Dumper($decoded);
 
   # Re-encode the message - unknown fields should be included
   my $reencoded = $decoded->encode();
